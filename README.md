@@ -20,7 +20,6 @@ It checks the packages, logs you in to Claude, patches serpantinum, asks what he
 ```
 niko run | kill | restart | status
 niko skins        use your own picture instead of the model (the file name becomes his name)
-niko personality  default, tsundere, dumb, sarcastic, chaotic, cheerleader or your own
 ```
 
 ## Layout

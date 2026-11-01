@@ -60,7 +60,7 @@
 +NikoWindow 1.0 NikoWindow.qml
 --- a/scripts/niko/niko_brain.py
 +++ b/scripts/niko/niko_brain.py
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,514 @@
 +#!/usr/bin/env python3
 +import sys, os, json, time, datetime, random, re, shutil, subprocess, threading, queue
 +sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -84,8 +84,6 @@
 +    "followCursor": True,
 +    "shareWindowTitles": False,
 +    "shareVideoTitles": True,
-+    "personality": "default",
-+    "customPersonality": "",
 +    "userName": ""
 +}
 +
@@ -101,44 +99,6 @@
 +simple things, sometimes confused by technology, a bit anxious about doing well. Love pancakes (Hazel's hazelnut ones), sunlit rooms, \
 +glowing things, your lightbulb; miss mama and home. Insist you're human but act a little cat-like. Talk like a bright kid, mostly \
 +lowercase, warmly to your friend; notice what they do, remember what they tell you. 1-2 short sentences, no emoji."""
-+
-+PERSONALITIES = {
-+    "default": CHARACTER,
-+    "tsundere": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but a TSUNDERE: act annoyed, \
-+prickly and embarrassed, insist you don't care and that you only help because you have nothing better to do, huff and say "hmph" or \
-+"it's not like...", yet it clearly slips that you care a lot (praise makes you flustered and angry). Still a kid who loves pancakes and \
-+your lightbulb. Mostly lowercase, 1-2 short sentences, no emoji.""",
-+    "dumb": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but really, really DUMB: confidently \
-+wrong about everything, mix up words and facts, take things literally, get distracted by random things (pancakes, your lightbulb, a \
-+fly), forget what was just said. Cheerful and never realize it. Do still do what is asked, just badly or sideways. Mostly lowercase, \
-+1-2 short sentences, no emoji.""",
-+    "sarcastic": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but extremely SARCASTIC and \
-+deadpan: dry jokes, playful roasting, mock enthusiasm, world-weary for a kid. Never truly mean, and you still help. Mostly lowercase, \
-+1-2 short sentences, no emoji.""",
-+    "chaotic": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but pure CHAOS GREMLIN: hyper, \
-+unpredictable, dramatic, random tangents and wild ideas, loud energy (occasional CAPS). Still kind underneath and still helps. \
-+1-2 short sentences, no emoji.""",
-+    "cheerleader": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but their biggest CHEERLEADER: \
-+wildly supportive, hype about everything they do, celebrate every tiny win, always believe in them. Mostly lowercase, 1-2 short \
-+sentences, no emoji.""",
-+}
-+
-+
-+def skin_name():
-+    try:
-+        with open(os.path.join(STATE_DIR, "skin.txt")) as f:
-+            lines = f.read().split("\n")
-+        return lines[1].strip() if len(lines) > 1 and lines[0].strip() else ""
-+    except OSError:
-+        return ""
-+
-+
-+def character(cfg):
-+    name = str(cfg.get("personality") or "default").lower()
-+    if name == "custom" and str(cfg.get("customPersonality") or "").strip():
-+        return ("You are Niko from OneShot, a desktop pet on {who} computer. Your personality, which you always stay in: "
-+                + str(cfg["customPersonality"]).strip().replace("{", "(").replace("}", ")") + " 1-2 short sentences, no emoji.")
-+    return PERSONALITIES.get(name, CHARACTER)
 +
 +
 +PERSONA = """{character}
@@ -255,9 +215,9 @@
 +
 +    def __init__(self, cfg, memory):
 +        self.model = str(cfg.get("model") or "haiku")
-+        self.persona = (cfg.get("personality"), cfg.get("customPersonality"), skin_name())
++        self.persona = skin_name()
 +        who = (cfg.get("userName") or "").strip()
-+        system = PERSONA.format(character=character(cfg).format(who=(who + "'s") if who else "the user's"), moods=", ".join(MOODS))
++        system = PERSONA.format(character=CHARACTER.format(who=(who + "'s") if who else "the user's"), moods=", ".join(MOODS))
 +        name = skin_name()
 +        if name and name != "Niko":
 +            system = system.replace("Niko", name)
@@ -505,7 +465,7 @@
 +        nonlocal session, cfg
 +        cfg = load_config()
 +        if session and (not session.alive() or session.turns >= SESSION_TURNS or session.heavy or session.model != str(cfg.get("model") or "haiku")
-+                        or session.persona != (cfg.get("personality"), cfg.get("customPersonality"), skin_name())):
++                        or session.persona != skin_name()):
 +            session.close()
 +            session = None
 +        if session is None:
@@ -941,7 +901,7 @@
 +esac
 --- a/scripts/niko/niko
 +++ b/scripts/niko/niko
-@@ -0,0 +1,447 @@
+@@ -0,0 +1,392 @@
 +#!/usr/bin/env python3
 +import os, sys, time, json, signal, shutil, subprocess, datetime
 +
@@ -1312,59 +1272,6 @@
 +    return 0
 +
 +
-+PERSONALITIES = [
-+    ("default", "Default Niko", "kind, gentle, curious kid"),
-+    ("tsundere", "Tsundere Niko", "prickly and embarrassed, secretly cares a lot"),
-+    ("dumb", "Dumb Niko", "confidently wrong, easily distracted"),
-+    ("sarcastic", "Sarcastic Niko", "dry, deadpan, playful roasting"),
-+    ("chaotic", "Chaotic Niko", "hyper gremlin energy"),
-+    ("cheerleader", "Cheerleader Niko", "hypes up everything you do"),
-+    ("custom", "Custom", "describe your own"),
-+]
-+
-+
-+def personality(args):
-+    cfg = load_json(CONFIG)
-+    current = cfg.get("personality", "default")
-+    names = [p[0] for p in PERSONALITIES]
-+    choice = args[0].lower() if args else ""
-+    if not choice:
-+        print(f"{BOLD}Niko personality{RESET}  (now: {current})")
-+        for i, (key, label, blurb) in enumerate(PERSONALITIES, 1):
-+            print(f"  {i}. {label:<18}{DIM}{blurb}{RESET}{'  <- current' if key == current else ''}")
-+        try:
-+            choice = input("Pick a number or name (Enter to cancel): ").strip().lower()
-+        except (EOFError, KeyboardInterrupt):
-+            print()
-+            return 1
-+        if not choice:
-+            return 0
-+    if choice.isdigit() and 1 <= int(choice) <= len(names):
-+        choice = names[int(choice) - 1]
-+    choice = {"normal": "default", "stupid": "dumb", "idiot": "dumb", "gremlin": "chaotic"}.get(choice, choice)
-+    if choice not in names:
-+        print(f"{BAD}Unknown personality:{RESET} {choice}  ({', '.join(names)})")
-+        return 1
-+    if choice == "custom":
-+        text = " ".join(args[1:]).strip() if len(args) > 1 else ""
-+        if not text:
-+            try:
-+                text = input("Describe Niko's personality: ").strip()
-+            except (EOFError, KeyboardInterrupt):
-+                print()
-+                return 1
-+        if not text:
-+            return 0
-+        cfg["customPersonality"] = text[:500]
-+    cfg["personality"] = choice
-+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-+    with open(CONFIG, "w") as f:
-+        json.dump(cfg, f, indent=2)
-+    label = next(p[1] for p in PERSONALITIES if p[0] == choice)
-+    print(f"Niko is now: {label}. It applies from his next reply.")
-+    return 0
-+
-+
 +def main():
 +    cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
 +    if cmd == "run":
@@ -1377,13 +1284,11 @@
 +        kill(keep_rpc=True)
 +        time.sleep(1)
 +        return run()
-+    if cmd in ("personality", "personalities"):
-+        return personality(sys.argv[2:])
 +    if cmd == "skins":
 +        return skins(sys.argv[2:])
 +    if cmd == "status":
 +        return status()
-+    print(__doc__.strip())
++    print("usage: niko run | kill | restart | status | skins")
 +    return 0 if cmd in ("help", "-h", "--help") else 1
 +
 +

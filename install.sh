@@ -81,4 +81,4 @@ if ask "Restart the shell and start Niko now?"; then
 fi
 
 echo
-echo "${G}Done.${N} Commands: niko run | kill | restart | status | skins | personality"
+echo "${G}Done.${N} Commands: niko run | kill | restart | status"
