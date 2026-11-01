@@ -1297,7 +1297,7 @@
 +    sys.exit(main())
 --- a/quickshell/dock/NikoPet.qml
 +++ b/quickshell/dock/NikoPet.qml
-@@ -0,0 +1,1631 @@
+@@ -0,0 +1,1625 @@
 +import QtQuick
 +import QtQuick3D
 +import Quickshell
@@ -1910,6 +1910,7 @@
 +
 +        function category(cls) {
 +            const c = cls.toLowerCase();
++            if (/claude|anthropic|chatgpt|openai/.test(c)) return "ai";
 +            if (/steam_app|gamescope|sober|roblox|minecraft|lutris|heroic|\.exe$/.test(c)) return "game";
 +            if (/code|codium|nvim|neovim|jetbrains|idea|pycharm|zed|kitty|alacritty|foot|wezterm|ghostty|konsole|terminal/.test(c)) return "code";
 +            if (/zen|firefox|chrom|brave|vivaldi|librewolf|browser/.test(c)) return "web";
@@ -2028,8 +2029,9 @@
 +
 +    function onAppChanged(cls) {
 +        let cat = apps.category(cls);
-+        if (cat === "" || Math.random() > 0.8) return;
-+        if (cat !== "web" && pet.config.proactive && Math.random() < 0.2 && Date.now() - (pet.lastReaction["app-ai"] || 0) > 2400000) {
++        let name = cls.replace(/^.*\./, "");
++        name = name.charAt(0).toUpperCase() + name.slice(1);
++        if (cat !== "web" && cat !== "" && pet.config.proactive && Math.random() < 0.2 && Date.now() - (pet.lastReaction["app-ai"] || 0) > 2400000) {
 +            pet.lastReaction["app-ai"] = Date.now();
 +            pet.lastReaction["app"] = Date.now();
 +            pet.ask("notice", "", "they just switched to the app " + cls);
@@ -2042,9 +2044,11 @@
 +            chat: ["talking to your friends? say hi from me!", "who are you talking to?"],
 +            music: ["picking music? i like the soft ones...", "ooh, what are we listening to next?"],
 +            art: ["are you making something? can i see?", "i like watching people make things..."],
-+            files: ["tidying up? i can help hold things!", "so many folders..."]
++            files: ["tidying up? i can help hold things!", "so many folders..."],
++            ai: ["is that claude? tell him i said hi!", "ooh, talking to the smart one? that's where my brain comes from!"],
++            "": ["ooh, " + name + "!", "what are we doing in " + name + "?"]
 +        };
-+        if (pet.react("app-" + cat, 480000, pet.pick(lines[cat]), cat === "game" ? "excited" : "curious"))
++        if (pet.react("app-" + cls.toLowerCase(), 150000, pet.pick(lines[cat]), cat === "game" ? "excited" : "curious"))
 +            pet.lastReaction["app"] = Date.now();
 +    }
 +
@@ -2106,7 +2110,7 @@
 +        property string pendingSite: ""
 +        onTriggered: {
 +            if (pendingClass === "" || pendingClass !== apps.current) return;
-+            if (Date.now() - (pet.lastReaction["app"] || 0) <= 90000 || pet.requestKind !== "") return;
++            if (Date.now() - (pet.lastReaction["app"] || 0) <= 15000 || pet.requestKind !== "") return;
 +            if (pendingSite !== "") pet.onSiteChanged(pendingSite);
 +            else pet.onAppChanged(pendingClass);
 +        }
@@ -2334,15 +2338,6 @@
 +        walkAnim.duration = Math.min(6000, Math.abs(target - pet.footX) * 6);
 +        walkAnim.restart();
 +    }
-+    function walkBy(px) {
-+        let margin = pet.width;
-+        let target = Math.max(margin, Math.min(pet.screenW - margin, pet.footX + px));
-+        if (pet.place !== "floor" || Math.abs(target - pet.footX) < 4) return;
-+        walk.dir = target > pet.footX ? 1 : -1;
-+        walkAnim.to = target;
-+        walkAnim.duration = Math.abs(target - pet.footX) * 6;
-+        walkAnim.restart();
-+    }
 +    QtObject { id: walk; property int dir: 0 }
 +    NumberAnimation {
 +        id: walkAnim
@@ -2518,7 +2513,7 @@
 +            let idleFor = (Date.now() - pet.lastInteraction) / 1000;
 +            let seated = niko3d.sit > 0.5;
 +            let actions = ["look", "look", "tilt", "blink2", "bulb", "lookaround", "sway"];
-+            if (!seated) actions.push("turn", "turn", "hop", "bounce", "wave", "pace", "pace");
++            if (!seated) actions.push("turn", "turn", "hop", "bounce", "wave");
 +            if (seated) actions.push("swing", "swing", "doze");
 +            if (!seated && Math.random() < 0.15) actions.push("spin");
 +            if (pet.place === "floor" && !seated && idleFor > 90) actions.push("sit", "sit");
@@ -2540,7 +2535,6 @@
 +            else if (a === "sway") swayAnim.restart();
 +            else if (a === "bounce") { hop.loops = 2; hop.restart(); }
 +            else if (a === "wave") waveAnim.restart();
-+            else if (a === "pace") { if (pet.place === "floor" && !walkAnim.running && !pet.falling) pet.walkBy((Math.random() < 0.5 ? -1 : 1) * pet.screenW * (0.04 + Math.random() * 0.08)); }
 +            else if (a === "spin") spinAnim.restart();
 +            else if (a === "doze") dozeAnim.restart();
 +        }
