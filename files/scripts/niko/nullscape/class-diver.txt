@@ -1,0 +1,2 @@
+diver, class diver
+Diver is a free class for all players and was the only class before Patch 3. Its role is horizontal mobility: ABILITY dives forward in a fixed arc, and jumping cancels the dive. It has no cooldown and can be recast after touching ground or landing on a Jump Pad, Grapple Point, Tria Orb, or Grindrail. Bonking off walls or players removes control unless Helmet is equipped. Ninja Belt gives a farther dive on ALT-ABILITY; Miniature Hourglass multiplies gift pickup range by 1.25x on powered dives.

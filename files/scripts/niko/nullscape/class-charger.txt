@@ -1,0 +1,2 @@
+charger, class charger
+Charger is a free class for all players, focused on ground charging and aerial quickdrops. Hold ABILITY to charge at high speed with reduced turning; charging into a Tripmine does not kill you but triggers a longer cooldown. Hold ALT-ABILITY while charging off a platform to create a temporary air platform lasting about one second. Pressing ABILITY or ALT-ABILITY mid-air performs a quickdrop, usable even on cooldown. Cooldown is 2 seconds, or 3 after a bonk or Tripmine hit. Jumping mid-charge cancels it.

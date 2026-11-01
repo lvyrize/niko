@@ -1,0 +1,2 @@
+springer, springers
+Springer first appears at level 1 with a selection cap of 2 and max stack 10. It picks a random landing spot marked by an outline, then jumps in a tall arc over about 2.75 seconds, then idles about 3 seconds before jumping again. Its landing shockwave knocks back nearby players, and landing directly on a player kills them. Counter: do a small jump as it lands to avoid the shockwave. Grace Wings are recommended early.

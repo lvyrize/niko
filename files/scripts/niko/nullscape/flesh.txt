@@ -1,0 +1,2 @@
+flesh, airborne flesh, fleshed, light flesh, heavy flesh
+Flesh first appears at level 5. It floats toward the nearest player at 12 studs/second, phases through objects, and infects nearby tiles. Contact causes Light Flesh (reduced mobility) or, when close, Heavy Flesh (abilities disabled). Touching Flesh no longer kills. Counters: ring Bell to cleanse nearby tiles and yourself, jump to traverse since jumping avoids most tile slowness, and use the 3-second immunity after an infection ends to escape. Playing as Spirit prevents infection.

@@ -1,0 +1,2 @@
+mart, marts, mart infection
+Mart first appears at level 1 with a selection cap of 1. It hovers toward the nearest player at 10 studs/second (20 on Extreme) and kills on contact. It phases through objects and can hide in tiles. Each merge with another Mart increases its size and speed, so spread multiple Marts apart. Radar Module: Enemies shows nearby enemies, including hidden ones. A player emoting near Mart drastically reduces its speed and makes it dance. Marts of size 6 or higher show a killing-range bubble.

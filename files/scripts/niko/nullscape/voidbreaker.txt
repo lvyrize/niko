@@ -1,0 +1,2 @@
+voidbreaker, void breaker, swords
+Voidbreaker first appears at level 15 with selection cap 2 and max stack 6. It fades in around the player, summons swords around them, and fires them after a brief delay. Jumping or falling does not dodge the swords. Step out of each sword's line of attack; swords from behind can be avoided by moving forward unless you have Blade Bombardment. Use an open area, since walls and slopes can block them. Swords per volley: 1 (Casual), 2 (Standard), plus an extra 2-sword volley on Extreme.

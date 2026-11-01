@@ -1,0 +1,2 @@
+sigil, sigils
+Sigil first appears at level 20, selection cap 1, max stack 2. It locks onto random glyph-marked players, charges for a few seconds, then fires a slow-turning beam at each target. Beams affect only their targeted player, and no player can be targeted by multiple Sigils at once. Beam cooldown rises when fewer than 6 players are alive. Up to 4 beams on Party and above. Counter: circle clockwise or counter-clockwise around it; if close when the beam starts, use verticality and slight circling to gain distance.

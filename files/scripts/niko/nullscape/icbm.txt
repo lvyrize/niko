@@ -1,0 +1,2 @@
+icbm, missile, intercontinental ballistic missile
+ICBM first appears at level 1. It locks onto a random player for 2.5 seconds, then descends for 1.5 seconds and explodes at its marked spot in a spherical blast radius. It vanishes for 5 seconds before targeting again. With one player left, its wait is 4x longer. Counter: reposition before it starts falling, since it stops tracking then, and stay outside the blast even if you are below it. On Extreme it underestimates speed, so changing speed shifts its landing.

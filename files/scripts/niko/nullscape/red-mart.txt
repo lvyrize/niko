@@ -1,0 +1,2 @@
+red mart, red marts
+Red Mart appears only when 4 or more temporary Marts are in a run with Red Marts and Arrogance active (no minimum level), with selection cap 1. It slowly floats toward the nearest player, passing through walls. When close, it inflates and explodes after a short delay, killing anyone in its radius, then respawns larger. Speed is 10 studs/second on Casual/Standard and 20 on Extreme. Counter: use Radar Module: Enemies, listen for Red Marts hiding in tiles, and spread them apart so they do not merge.

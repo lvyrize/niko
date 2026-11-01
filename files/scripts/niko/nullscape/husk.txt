@@ -1,0 +1,2 @@
+husk, husks, skinwalker
+Husk first appears at level 1 and is selectable in Enemy Shops with a cap of 2. It waits 3.5 seconds after detecting movement, then spawns, with each stack appearing 1.2 seconds after the previous one. It copies every movement, kills on touch, and turns bodies into skeletons. Counter: avoid backtracking and contact, stay near the sides at dead ends, and jump over Husks when possible. No movement means no spawning, so scouting briefly at the start is safe. One Husk per stack on Casual/Standard, two on Extreme.

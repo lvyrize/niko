@@ -1,0 +1,2 @@
+kolona, kolóna, pillar
+Kolóna is selectable from level 10. It appears on the left side of the screen, briefly shows a target number, then counts up from 1. Players must use their ability when the count reaches that number, or it kills them. The number range is 5-12 on Standard/Extreme and 8-10 on Casual. Counter: have your ability active as the pillar strikes; each tick rotates the pillar 22.5 degrees. Being Fleshed pauses the count, and carrying the Medal makes its attack harmless. It does not spawn for Prisoner.

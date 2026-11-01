@@ -1,0 +1,2 @@
+tripcoins, tripcoin, currency, shop, money
+Tripcoins are the main currency for the lobby shop. Players earn them by collecting Gifts and Gold Gifts during a run at 0.15 Tripcoins per gift, plus end-of-level rewards if at least one player reaches the beacon. Tripcoin bonuses act as stacking multipliers. Tripcoins buy cosmetics (emotes, auras, trails, animations, skyboxes) and Classes. Prices: Spirit 1400, Grappler 1800, Glider 2000, Wanted 2500, Prisoner 2500. Some shop items also require certain Badges.

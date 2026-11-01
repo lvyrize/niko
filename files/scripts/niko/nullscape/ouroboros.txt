@@ -1,0 +1,2 @@
+ouroboros, hunk, greater curse
+Ouroboros is a Greater Curse, new in Patch 5.1, that first appears at level 10 if the run has 2 permanent Husks. The Hunk spawns at the back of the Husk conga line, with a timer starting at 25 seconds plus 1 second per Husk past the first 5. Collecting it by entering its red aura grants brief immunity to Husks. If the timer runs out, the Hunk enrages and sprints at the player at an unavoidable speed. Diver, Glider, and Charger collect it faster.

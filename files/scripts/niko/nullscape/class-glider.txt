@@ -1,0 +1,2 @@
+glider, gliding, class glider
+Glider is a purchasable class costing 2000 Tripcoins, introduced in Patch 5. Holding the ability key glides in the camera's direction, with speed varying by vertical aim. Stamina is limited and recharges mainly from collecting gifts (up to 2.00x with all gifts) or using Jump Pads, and more slowly while airborne. Double Jump cancels a glide unless Ninja Belt is owned. Gliding into walls bonks the player. Glider collects the Ouroboros Hunk faster.

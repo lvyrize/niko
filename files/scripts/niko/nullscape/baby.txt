@@ -1,0 +1,2 @@
+baby, babies
+Baby first appears at level 1 and is selectable up to 2 times in Enemy Shops. It targets the nearest player, shows a dashed line for about 0.75 seconds, then dashes along that line for about 1 second. Touching it kills a player at any time. On Extreme it dashes twice. Counter: watch the warning line and move out of it, outrun it with speed boosts like Sport Shoes, avoid 90-degree angles, and use stairs or Jump Pads to change its path.

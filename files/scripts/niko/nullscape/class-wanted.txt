@@ -1,0 +1,2 @@
+wanted, class wanted
+Wanted is a fast, mobility-focused class unlocked by the Level 25 (Standard) achievement and sold for 2500 Tripcoins. Its ability instantly stops all momentum with a short cooldown; with Ninja Belt it launches you toward the camera and uses all jumps. Passive: +10% base speed. Enhanced upgrades include Adrenaline (+30%), Swiftness Ring (+15% per stack, max 45%), Sport Shoes (+50%), and Advanced Gravity Coil (+35% jump height). Double Jump, Pocket Bell, and Medal each grant two extra jumps. Helmet, Shark Tail, Shield, and Miniature Hourglass are disabled.

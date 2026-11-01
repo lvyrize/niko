@@ -1,0 +1,2 @@
+altar, altars, altar of passage, altar of duality, altar of wishes, altar of purification
+Altars are run-altering objects. Altar of Passage enrages Guardian and Voidbound Guardian, making them move and shoot faster. Altar of Duality (new in Patch 5.1) introduces Delusions. Altar of Wishes allows Altar of Duality to remove Delusions. Altar of Purification removes Curses, but cannot remove Greater Curses. Patch 5.1 also added Altars of Rerolls, Curses, and Wishes. The wiki has individual pages for each altar with full details.

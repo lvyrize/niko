@@ -1,0 +1,2 @@
+voidbound icbm, voidbound missile, void icbm
+Voidbound ICBM first appears at level 15, only if a permanent ICBM was obtained; selection cap 1. It follows the player, then stops tracking and descends, summoning explosions in patterns based on the direction the player faces. Those explosions track the player vertically, so jumping or diving cannot avoid them. Counter: its blast radius is limited, so enough speed lets you escape; explosions have a brief delay, so keep moving between them. Spirit can pull the attack away from its body.

@@ -1,0 +1,2 @@
+radar, radar module, tactics upgrades, information upgrades
+Information and tactics upgrades on the wiki include Radar, Radar Module: Enemies, Radar Module: Altars, Radar Module: Instruments, Radar Module: Tripmines, Radar Module: Players, Soul Tracers, Defuse Kit, Orb, and Adrenaline. Radar Module: Enemies shows nearby enemies, including hidden ones (useful against Mart and Red Mart). Radar Module: Instruments helps find Cadence instruments. Adrenaline gives +30% speed for Wanted. Per-item details are on each upgrade's wiki page.

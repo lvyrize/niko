@@ -1,0 +1,2 @@
+ponderer
+Ponderer first appears at level 12, minimum level 12, selection cap 1, max stack 1. While calm it is stationary and cannot kill, but its timer ticks down unless a player looks at it. At 0 it turns hostile, moves toward the nearest player, and kills on contact. It reverts to calm once its timer rises back to 1. Maximum time scales with lobby size. Counter: keep looking at it. On Extreme it moves faster when hostile and its timer rises more slowly while watched.

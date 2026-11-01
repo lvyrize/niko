@@ -1,0 +1,2 @@
+bell, bells, nullscape bell, ringing bell
+Bell first appears at level 1. It teleports in front of a random player, predicting their velocity, and stays for about 13.35 seconds before teleporting again. Ringing it blinds the player briefly, throws them upward, and cleanses nearby flesh. Reaching ring counter 3 inflicts Overtuned for 20 seconds, so the next ring kills. Grapplers can grapple it, Chargers can charge into it, and all classes except Spirit and Prisoner can negate its boost.

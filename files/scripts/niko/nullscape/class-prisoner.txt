@@ -1,0 +1,2 @@
+prisoner, class prisoner, wicked
+Prisoner is a challenge class with no abilities; its only upgrade is speed. It is unlocked by the Level 25 (Extreme) achievement and disables most upgrades. Base movement speed is boosted by 20% and it gives +25% Tripcoins. Originally introduced as Wicked in Patch 3, renamed Prisoner shortly after; shop price is 2,500 Tripcoins. Kolóna does not spawn for it. Prisoner was kept in Patch 5.1.

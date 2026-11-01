@@ -1,0 +1,2 @@
+operator
+Operator is a client-sided enemy first selectable at level 5, and only one can exist at a time. It kills players who keep moving or using abilities. Its green face appears on the left side of the screen and dings on appearing. If the player gives no inputs within 3 seconds, the face turns yellow, then red, and it kills. Counter: let go of all movement and ability inputs before its eyes open, since stopping earlier triggers it earlier. Kill check occurs around tick 11, giving 2.5 seconds to stop.

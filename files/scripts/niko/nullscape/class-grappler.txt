@@ -1,0 +1,2 @@
+grappler, grapple, class grappler
+Grappler is a purchasable class costing 1800 Tripcoins. It uses a grappling hook to swing and carry momentum across the map. Hold ABILITY to aim and release to grapple; jump or press ABILITY again to let go. Reeling works by default on Jump Pads, Grapple Points, Tria Orbs, and Bell; Ninja Belt allows reeling to any object. Stamina passively regenerates a full bar in about 1 minute, and gifts raise regeneration up to 2.00x. Miniature Hourglass increases grapple range by 40%.

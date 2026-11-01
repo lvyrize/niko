@@ -1,0 +1,2 @@
+spirit, class spirit
+Spirit is a purchasable class costing 1400 Tripcoins. Pressing ABILITY sends your spirit out of your body, and pressing it again returns you. ALT-ABILITY or double-tapping enters fling mode, launching you on return. In spirit form you can tank one hit with a shield and have enhanced mobility and gift collection. Exiting grants 0.75 seconds of invincibility. Charge drains faster the farther you are from your body. Ninja Belt adds 10 seconds of spirit time and lets you teleport your body to you. Spirit prevents Flesh infection.

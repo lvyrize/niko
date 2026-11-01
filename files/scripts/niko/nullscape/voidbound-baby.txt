@@ -1,0 +1,2 @@
+voidbound baby, voidbound babies, void baby
+Voidbound Baby replaces Baby in enemy selections and first appears at level 10 (raised from level 2 in Patch 5), selection cap 2. It works like Baby but dashes more often and farther. Casual/Standard: one dash per attack. Extreme: two dashes, with the second's trajectory set after the first. Counter: keep moving and strafe, watch the indicator rather than the muffled audio, and move up or down in the air, since it does not dash to where you are jumping or falling.

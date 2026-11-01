@@ -1,0 +1,2 @@
+telefragger, telefraggers
+Telefragger first appears at level 8, selection cap 2, max stack 10. It hovers toward a changing target at 6 studs/second and kills on contact. Every 7 seconds it teleports in front of its target, based on the direction the player faces. A sound cue plays from the landing spot and white particles appear on the target's torso. Counter: listen for the cue, change direction to shift where it lands, and avoid straight-line abilities. On Extreme it teleports more often and dashes, fatal on contact. Shark Tail helps dodge.

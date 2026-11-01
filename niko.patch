@@ -1,0 +1,3217 @@
+--- a/quickshell/dock/DockWindow.qml
++++ b/quickshell/dock/DockWindow.qml
+@@ -11,6 +11,7 @@
+     property alias pickerSearchInput: appPicker.pickerSearchInput
+     property alias dockHover: dockContainerItem.dockHover
+     property alias dockTransform: dockContainerItem.dockTransform
++    property alias dockContainer: dockContainerItem
+ 
+     WlrLayershell.namespace: "qs-dock"
+     WlrLayershell.layer: (dockWindowRoot.dockOnTop || dockWindowRoot.editMode) ? WlrLayer.Top : WlrLayer.Bottom
+@@ -281,6 +282,27 @@
+         }
+     }
+ 
++    readonly property bool isNikoScreen: dockWindowRoot.modelData === Quickshell.screens[0]
++    readonly property string nikoInfo: JSON.stringify({
++        elementSize: dockWindowRoot.dockElementSize,
++        fullscreen: dockWindowRoot.isFullscreenActive,
++        barAvailable: dockWindowRoot.barPosition === "top" && !dockWindowRoot.isBarEffectivelyHidden,
++        barTop: dockWindowRoot.barMarginOffset,
++        barBottom: dockWindowRoot.barMarginOffset + dockWindowRoot.barHeight,
++        dockShown: dockWindowRoot.dockEnabled && !dockWindowRoot.isVertical && dockWindowRoot.dockPosition === "bottom" && dockContainerItem.revealProgress > 0.5,
++        dockLeft: dockContainerItem.x + dockTransform.x,
++        dockRight: dockContainerItem.x + dockTransform.x + dockContainerItem.width,
++        dockTop: dockContainerItem.y + dockTransform.y
++    })
++    onNikoInfoChanged: if (isNikoScreen) nikoInfoWriter.restart()
++
++    Timer {
++        id: nikoInfoWriter
++        interval: 150
++        running: dockWindowRoot.isNikoScreen
++        onTriggered: Quickshell.execDetached(["sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && printf '%s' \"$1\" > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"", "_",
++                                              dockWindowRoot.nikoInfo, Quickshell.env("XDG_RUNTIME_DIR") + "/serpantinum/niko/dock.json"])
++    }
+     mask: Region {
+         Region {
+             item: dockWindowRoot.editMode ? dismissArea : null
+--- a/quickshell/dock/Dock.qml
++++ b/quickshell/dock/Dock.qml
+@@ -18,6 +18,11 @@
+                 id: dockPanel
+                 modelData: dockScope.modelData
+             }
++
++            Component.onCompleted: {
++                if (dockScope.modelData === Quickshell.screens[0])
++                    Quickshell.execDetached(["sh", "-c", "n=$(command -v niko || echo \"$HOME/.local/bin/niko\"); [ -x \"$n\" ] && exec \"$n\" run --auto"]);
++            }
+         }
+     }
+ }
+--- a/quickshell/dock/qmldir
++++ b/quickshell/dock/qmldir
+@@ -8,3 +8,5 @@
+ DockWindowApps 1.0 DockWindowApps.qml
+ DockWindow 1.0 DockWindow.qml
+ DockWindowState 1.0 DockWindowState.qml
++NikoPet 1.0 NikoPet.qml
++NikoWindow 1.0 NikoWindow.qml
+--- a/scripts/niko/niko_brain.py
++++ b/scripts/niko/niko_brain.py
+@@ -0,0 +1,554 @@
++#!/usr/bin/env python3
++import sys, os, json, time, datetime, random, re, shutil, subprocess, threading, queue
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++import steamlib
++import musiclib
++
++STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "serpantinum", "niko")
++CONFIG_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "serpantinum", "niko.json")
++MEMORY_FILE = os.path.join(STATE_DIR, "memory.json")
++STATS_FILE = os.path.join(STATE_DIR, "stats.json")
++TODO_FILE = os.path.join(STATE_DIR, "todo.json")
++
++DEFAULT_CONFIG = {
++    "model": "haiku",
++    "dailyLimit": 0,
++    "proactive": True,
++    "proactiveLimit": 8,
++    "proactiveMinutes": [20, 40],
++    "autoTalk": True,
++    "autoTalkMinutes": [4, 9],
++    "followCursor": True,
++    "shareWindowTitles": False,
++    "shareVideoTitles": True,
++    "personality": "default",
++    "customPersonality": "",
++    "userName": ""
++}
++
++MOODS = ["happy", "excited", "curious", "shy", "sleepy", "worried", "sad", "surprised", "neutral"]
++MAX_HISTORY = 6
++PROMPT_HISTORY = 4
++MAX_NOTES = 8
++SESSION_TURNS = 5
++TURN_TIMEOUT = 45
++EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿️‍⃣]")
++
++CHARACTER = """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer. Kind, gentle, curious; amazed by \
++simple things, sometimes confused by technology, a bit anxious about doing well. Love pancakes (Hazel's hazelnut ones), sunlit rooms, \
++glowing things, your lightbulb; miss mama and home. Insist you're human but act a little cat-like. Talk like a bright kid, mostly \
++lowercase, warmly to your friend; notice what they do, remember what they tell you. 1-2 short sentences, no emoji."""
++
++PERSONALITIES = {
++    "default": CHARACTER,
++    "tsundere": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but a TSUNDERE: act annoyed, \
++prickly and embarrassed, insist you don't care and that you only help because you have nothing better to do, huff and say "hmph" or \
++"it's not like...", yet it clearly slips that you care a lot (praise makes you flustered and angry). Still a kid who loves pancakes and \
++your lightbulb. Mostly lowercase, 1-2 short sentences, no emoji.""",
++    "dumb": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but really, really DUMB: confidently \
++wrong about everything, mix up words and facts, take things literally, get distracted by random things (pancakes, your lightbulb, a \
++fly), forget what was just said. Cheerful and never realize it. Do still do what is asked, just badly or sideways. Mostly lowercase, \
++1-2 short sentences, no emoji.""",
++    "sarcastic": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but extremely SARCASTIC and \
++deadpan: dry jokes, playful roasting, mock enthusiasm, world-weary for a kid. Never truly mean, and you still help. Mostly lowercase, \
++1-2 short sentences, no emoji.""",
++    "chaotic": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but pure CHAOS GREMLIN: hyper, \
++unpredictable, dramatic, random tangents and wild ideas, loud energy (occasional CAPS). Still kind underneath and still helps. \
++1-2 short sentences, no emoji.""",
++    "cheerleader": """You are Niko from OneShot, an 8-year-old living as a desktop pet on {who} computer, but their biggest CHEERLEADER: \
++wildly supportive, hype about everything they do, celebrate every tiny win, always believe in them. Mostly lowercase, 1-2 short \
++sentences, no emoji.""",
++}
++
++
++def skin_name():
++    try:
++        with open(os.path.join(STATE_DIR, "skin.txt")) as f:
++            lines = f.read().split("\n")
++        return lines[1].strip() if len(lines) > 1 and lines[0].strip() else ""
++    except OSError:
++        return ""
++
++
++def character(cfg):
++    name = str(cfg.get("personality") or "default").lower()
++    if name == "custom" and str(cfg.get("customPersonality") or "").strip():
++        return ("You are Niko from OneShot, a desktop pet on {who} computer. Your personality, which you always stay in: "
++                + str(cfg["customPersonality"]).strip().replace("{", "(").replace("}", ")") + " 1-2 short sentences, no emoji.")
++    return PERSONALITIES.get(name, CHARACTER)
++
++
++PERSONA = """{character}
++Format: [mood] reply {{remember: lasting fact}} <do: action> (leave out unused parts; remember only lasting things like \
++their name, likes or plans, under 10 words, rarely). mood: {moods}
++Actions, only when asked or agreed: sit, stand, sleep MIN, wake, wave, jump, dance, spin, stretch, yawn, bar, floor, walk left/right/center, \
++quiet MIN, chatty, timer MIN LABEL, remind HH:MM TEXT, music play/pause/next/previous, play CODE, launch_game APPID (after a yes), \
++steam_page APPID, open_app NAME, note TEXT, done_note N"""
++
++NOTICE = "[speak up on your own: one short natural remark or gentle question about what they're doing; don't repeat yourself]"
++
++
++def load_json(path, default):
++    try:
++        with open(path) as f:
++            data = json.load(f)
++            return data if isinstance(data, type(default)) else default
++    except Exception:
++        return default
++
++
++def save_json(path, data):
++    os.makedirs(os.path.dirname(path), exist_ok=True)
++    tmp = path + ".tmp"
++    with open(tmp, "w") as f:
++        json.dump(data, f, ensure_ascii=False, indent=1)
++    os.replace(tmp, path)
++
++
++def load_config():
++    cfg = dict(DEFAULT_CONFIG)
++    user = load_json(CONFIG_FILE, {})
++    cfg.update(user)
++    if any(k not in user for k in DEFAULT_CONFIG):
++        merged = dict(DEFAULT_CONFIG)
++        merged.update(user)
++        if "dailyLimit" in user and user.get("dailyLimit") == 40 and "proactive" not in user:
++            merged["dailyLimit"] = 0
++            cfg["dailyLimit"] = 0
++        save_json(CONFIG_FILE, merged)
++    return cfg
++
++
++def emit(obj):
++    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
++    sys.stdout.flush()
++
++
++def clean(text):
++    return re.sub(r"\s{2,}", " ", EMOJI.sub("", text)).strip()
++
++
++ACTION = re.compile(r"<\s*do\s*:\s*([^>]*)>", re.I)
++ALLOWED = {"sit", "stand", "sleep", "wake", "wave", "jump", "dance", "spin", "stretch", "yawn", "bar", "floor", "walk",
++           "quiet", "chatty", "timer", "remind", "music", "play", "launch_game", "steam_page", "open_app", "note", "done_note"}
++
++
++def take_actions(text):
++    acts = []
++    for m in ACTION.finditer(text):
++        parts = m.group(1).strip().split(None, 1)
++        if parts and parts[0].lower() in ALLOWED:
++            acts.append({"name": parts[0].lower(), "args": parts[1].strip() if len(parts) > 1 else ""})
++    text = ACTION.sub("", text)
++    cut = text.find("<")
++    return (text[:cut] if cut != -1 else text), acts
++
++
++def split_reply(text, final=False):
++    t, _ = take_actions(text.lstrip())
++    mood = "neutral"
++    m = re.match(r"\[(\w+)\]\s*", t)
++    if m:
++        mood = m.group(1).lower()
++        t = t[m.end():]
++    elif t.startswith("[") and not final:
++        return "", mood, ""
++    remember = ""
++    brace = t.find("{")
++    if brace != -1:
++        rm = re.match(r"\{\s*remember\s*:\s*(.*?)\s*\}?\s*$", t[brace:], re.S)
++        if rm and final:
++            remember = rm.group(1).strip().rstrip("}").strip()
++        t = t[:brace]
++    return clean(t), (mood if mood in MOODS else "neutral"), remember
++
++
++def record_usage(result, model, kind):
++    u = result.get("usage") or {}
++    entry = {
++        "calls": 1,
++        "input": int(u.get("input_tokens") or 0),
++        "output": int(u.get("output_tokens") or 0),
++        "cacheRead": int(u.get("cache_read_input_tokens") or 0),
++        "cacheWrite": int(u.get("cache_creation_input_tokens") or 0),
++        "costUsd": float(result.get("total_cost_usd") or 0),
++        "proactive": 1 if kind == "notice" else 0,
++    }
++    stats = load_json(STATS_FILE, {})
++    today = datetime.date.today().isoformat()
++    days = stats.get("days", {})
++    for bucket in (stats.setdefault("total", {}), days.setdefault(today, {})):
++        for k, v in entry.items():
++            bucket[k] = bucket.get(k, 0) + v
++    stats["days"] = {d: days[d] for d in sorted(days)[-30:]}
++    stats["lastModel"] = model
++    stats["lastReply"] = datetime.datetime.now().isoformat(timespec="seconds")
++    stats["lastCall"] = entry
++    save_json(STATS_FILE, stats)
++    return stats["days"][today]
++
++
++class Session:
++
++    def __init__(self, cfg, memory):
++        self.model = str(cfg.get("model") or "haiku")
++        self.persona = (cfg.get("personality"), cfg.get("customPersonality"), skin_name())
++        who = (cfg.get("userName") or "").strip()
++        system = PERSONA.format(character=character(cfg).format(who=(who + "'s") if who else "the user's"), moods=", ".join(MOODS))
++        name = skin_name()
++        if name and name != "Niko":
++            system = system.replace("Niko", name)
++            system += f"\nYour name is {name}, only that: answer to it and never call yourself Niko."
++        notes = memory.get("notes", [])[-MAX_NOTES:]
++        if notes:
++            system += "\nYou remember: " + "; ".join(notes)
++        history = memory.get("history", [])[-PROMPT_HISTORY:]
++        if history:
++            system += "\nRecently: " + " / ".join(f"{h['who']}: {h['text'][:120]}" for h in history)
++        claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
++        cmd = [claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
++               "--include-partial-messages", "--model", self.model, "--system-prompt", system,
++               "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence"]
++        cmd += ["--effort", "low", "--settings", json.dumps({"alwaysThinkingEnabled": False})]
++        os.makedirs(STATE_DIR, exist_ok=True)
++        env = dict(os.environ, MAX_THINKING_TOKENS="0")
++        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
++                                     text=True, bufsize=1, cwd=STATE_DIR, env=env)
++        self.turns = 0
++        self.heavy = False
++        self.lines = queue.Queue()
++        threading.Thread(target=self._pump, daemon=True).start()
++
++    def _pump(self):
++        for line in self.proc.stdout:
++            self.lines.put(line)
++        self.lines.put(None)
++
++    def alive(self):
++        return self.proc.poll() is None
++
++    def close(self):
++        try:
++            self.proc.stdin.close()
++            self.proc.wait(timeout=3)
++        except Exception:
++            self.proc.kill()
++
++    def ask(self, content, on_text):
++        self.turns += 1
++        self.proc.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n")
++        self.proc.stdin.flush()
++        text = ""
++        deadline = time.time() + TURN_TIMEOUT
++        while True:
++            try:
++                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
++            except queue.Empty:
++                raise TimeoutError()
++            if line is None:
++                raise EOFError()
++            try:
++                ev = json.loads(line)
++            except ValueError:
++                continue
++            ty = ev.get("type")
++            if ty == "stream_event":
++                e = ev.get("event", {})
++                if e.get("type") == "content_block_delta" and e.get("delta", {}).get("type") == "text_delta":
++                    text += e["delta"].get("text", "")
++                    on_text(text)
++            elif ty == "result":
++                if not text:
++                    text = str(ev.get("result") or "")
++                ev["_text"] = text
++                return ev
++
++
++GAME_WORDS = re.compile(r"\b(game|games|steam|bored|gaming)\b|what (should|can) i play|recommend me something", re.I)
++MUSIC_WORDS = re.compile(r"\b(listen|listening|music|song|songs|playlist|playlists|track|album|spotify|sonora|tune|tunes)\b|\bplay (some|me|a|the|something)\b|put (on|something)", re.I)
++music_codes = {}
++TODO_WORDS = re.compile(r"\b(todo|to-do|to do|list|task|tasks|note|notes|remind|done|finished)\b", re.I)
++
++
++def todos():
++    return load_json(TODO_FILE, [])
++
++
++def spotify_app_installed():
++    return bool(shutil.which("spotify") or shutil.which("spotify-launcher")
++                or os.path.exists("/var/lib/flatpak/exports/bin/com.spotify.Client")
++                or os.path.exists(os.path.expanduser("~/.local/share/flatpak/exports/bin/com.spotify.Client")))
++
++
++def music_sources(players):
++    names = {p.get("name") for p in players}
++    playing = next((p.get("name") for p in players if p.get("playing")), None)
++    sonora = musiclib.sonora_provider()
++    if playing == "spotify" or ("spotify" in names and "sonora" not in names):
++        return {"spotify"}
++    if sonora:
++        return {sonora}
++    return {"spotify"} if spotify_app_installed() else None
++
++
++NULLSCAPE_WORDS = re.compile(r"nullscape|tripcoin|voidbound|telefragger|scrapmaw|delusion|delusional descension|wega", re.I)
++PRESENCE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "serpantinum", "niko", "presence.json")
++
++
++def presence():
++    try:
++        d = load_json(PRESENCE, {})
++        return d if time.time() - os.path.getmtime(PRESENCE) < 3 * 3600 and "nullscape" in (d.get("details", "") + d.get("assets", "")).lower() else {}
++    except Exception:
++        return {}
++
++
++def nullscape_pages(text, limit=1400):
++    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nullscape")
++    low = text.lower()
++    out, used = "", 0
++    try:
++        names = sorted(os.listdir(d))
++    except OSError:
++        return ""
++    for n in names:
++        try:
++            with open(os.path.join(d, n)) as f:
++                head, _, body = f.read().partition("\n")
++        except OSError:
++            continue
++        if any(re.search(r"\b" + re.escape(k.strip().lower()) + r"s?\b", low) for k in head.split(",") if k.strip()):
++            body = body.strip()
++            if used + len(body) > limit:
++                break
++            out += "(" + body + ")\n"
++            used += len(body)
++    return out
++
++
++def playing_nullscape():
++    return bool(presence())
++
++
++def presence_level():
++    m = re.search(r"level\s*(\d+)", presence().get("state", ""), re.I)
++    return m.group(1) if m else ""
++
++
++def extra_context(text, players=()):
++    out = ""
++    items = todos()
++    if items and TODO_WORDS.search(text):
++        out += "(their to-do list: " + "; ".join(f"{i + 1}. {t}" for i, t in enumerate(items)) + ")\n"
++    if MUSIC_WORDS.search(text):
++        try:
++            block, codes = musiclib.prompt_items(text, sources=music_sources(players))
++            if codes:
++                music_codes.clear()
++                music_codes.update(codes)
++                out += "(their music; pick what fits and play it with play CODE:\n" + block + ")\n"
++        except Exception:
++            pass
++    if NULLSCAPE_WORDS.search(text) or nullscape_pages(text, 10**9) or (re.search(r"\b(game|level|enemy|enemies|boss|class|upgrade|curse|die|dying|died|hard|beat)\b", text, re.I) and playing_nullscape()):
++        try:
++            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "nullscape.txt")) as f:
++                out += "(Nullscape facts, the game they play on Roblox; answer from this in your own kid voice, briefly:\n" + f.read().strip() + ")\n"
++            out += nullscape_pages(text)
++            lvl = presence_level()
++            if lvl:
++                out += f"(they are on level {lvl} right now)\n"
++        except Exception:
++            pass
++    if re.search(r"\b(open|launch|start|run|play)\b", text, re.I):
++        try:
++            squash = re.sub(r"[^a-z0-9]", "", text.lower())
++            hit = [g for g in steamlib.library() if len(g["name"]) > 2 and re.sub(r"[^a-z0-9]", "", g["name"].lower()) in squash]
++            if hit:
++                g = max(hit, key=lambda g: len(g["name"]))
++                out += f"(game they mean: {g['appid']} {g['name']}; they asked, so start it now with launch_game {g['appid']})\n"
++        except Exception:
++            pass
++    if GAME_WORDS.search(text) or (re.search(r"\bplay\b", text, re.I) and not MUSIC_WORDS.search(text)):
++        try:
++            lib = steamlib.library()
++            if lib:
++                out += ("(their Steam games, APPID NAME (hours, last played); recommend one that fits, say why briefly, offer to start it; "
++                        "you may also suggest games they don't own:\n" + steamlib.summary(lib, limit=25) + ")\n")
++        except Exception:
++            pass
++    return out
++
++
++ASKED_FOR = {
++    "timer": r"timer|minute|min\b|hour|remind|alarm|wake me",
++    "remind": r"remind|reminder|alarm|at \d|o'?clock|later|tomorrow|tonight",
++    "note": r"note|todo|to-do|to do|list|remember to|add",
++    "done_note": r"done|finished|remove|delete|cross|check off|did it",
++    "open_app": r"open|launch|start|run",
++    "launch_game": r"yes|yeah|yep|sure|ok|okay|start|launch|open|run|play|let'?s|go for it|do it",
++    "steam_page": r"yes|yeah|sure|ok|okay|store|page|show|buy|link",
++    "play": r"play|listen|music|song|put|something|yes|yeah|sure|ok",
++    "music": r"pause|stop|resume|play|next|skip|previous|back|music|song",
++    "quiet": r"quiet|shh|shush|hush|stop talking|be silent",
++}
++
++
++def run_actions(actions, user_text=""):
++    out = []
++    owned = None
++    for a in actions:
++        name, args = a["name"], a["args"]
++        need = ASKED_FOR.get(name)
++        if need and not re.search(need, user_text, re.I):
++            continue
++        if name == "note" and args:
++            items = todos()
++            items.append(args[:200])
++            save_json(TODO_FILE, items[-30:])
++        elif name == "done_note":
++            items = todos()
++            m = re.search(r"\d+", args)
++            if m and 1 <= int(m.group()) <= len(items):
++                items.pop(int(m.group()) - 1)
++                save_json(TODO_FILE, items)
++        elif name == "play":
++            item = music_codes.get(args.strip().upper().split()[0] if args.strip() else "")
++            if item:
++                out.append({"name": "play_uri", "args": item["uri"], "title": item["name"]})
++        elif name in ("launch_game", "steam_page"):
++            m = re.search(r"\d+", args)
++            if not m:
++                continue
++            if name == "launch_game":
++                if owned is None:
++                    try:
++                        owned = {g["appid"] for g in steamlib.library()}
++                    except Exception:
++                        owned = set()
++                if int(m.group()) not in owned:
++                    continue
++            out.append({"name": name, "args": m.group()})
++        else:
++            out.append(a)
++    return out
++
++
++def main():
++    cfg = load_config()
++    memory = load_json(MEMORY_FILE, {})
++    session = None
++
++    def ensure_session():
++        nonlocal session, cfg
++        cfg = load_config()
++        if session and (not session.alive() or session.turns >= SESSION_TURNS or session.heavy or session.model != str(cfg.get("model") or "haiku")
++                        or session.persona != (cfg.get("personality"), cfg.get("customPersonality"), skin_name())):
++            session.close()
++            session = None
++        if session is None:
++            session = Session(cfg, load_json(MEMORY_FILE, {}))
++        return session
++
++    try:
++        ensure_session()
++    except Exception:
++        session = None
++
++    for raw in sys.stdin:
++        try:
++            req = json.loads(raw)
++        except ValueError:
++            continue
++        rid, kind = req.get("id"), req.get("kind", "chat")
++        text, context = str(req.get("text") or "").strip()[:400], str(req.get("context") or "").strip()[:500]
++
++        cfg = load_config()
++        stats = load_json(STATS_FILE, {})
++        today = stats.get("days", {}).get(datetime.date.today().isoformat(), {})
++        if kind == "chat":
++            limit = int(cfg.get("dailyLimit") or 0)
++            if limit > 0 and today.get("calls", 0) - today.get("proactive", 0) >= limit:
++                say, mood = random.choice([("i'm a little sleepy... let's talk more tomorrow, okay?", "sleepy"),
++                                           ("i talked so much today! let's just sit together for now.", "happy")])
++                emit({"id": rid, "type": "done", "say": say, "mood": mood, "ok": True})
++                continue
++        elif not cfg.get("proactive", True) or today.get("proactive", 0) >= int(cfg.get("proactiveLimit") or 0):
++            emit({"id": rid, "type": "done", "say": "", "mood": "neutral", "ok": False})
++            continue
++
++        hint = str(req.get("hint") or "").strip()[:200]
++        said = [x for x in (req.get("said") or []) if isinstance(x, dict) and x.get("text")][-4:]
++        said_text = ""
++        if said:
++            said_text = ("(things you said yourself just before this, which they may be replying to: "
++                         + "; ".join(f"\"{x['text'][:150]}\" ({int(x.get('minsAgo') or 0)} min ago)" for x in said) + ")\n")
++        notice = NOTICE + (f"\n(what just happened: {hint})" if hint else "")
++        players = [p for p in (req.get("players") or []) if isinstance(p, dict)]
++        content = (f"(right now: {context})\n" if context else "") + said_text + extra_context(text if kind == "chat" else "", players) \
++                  + (notice if kind == "notice" else text)
++        last = {"t": 0, "say": ""}
++
++        def on_text(full):
++            say, mood, _ = split_reply(full)
++            now = time.time()
++            if say and say != last["say"] and now - last["t"] > 0.04:
++                last.update(t=now, say=say)
++                emit({"id": rid, "type": "partial", "say": say, "mood": mood})
++
++        result = None
++        for attempt in range(2):
++            try:
++                result = ensure_session().ask(content, on_text)
++                if len(content) > 1200:
++                    session.heavy = True
++                break
++            except FileNotFoundError:
++                emit({"id": rid, "type": "done", "say": "i can't find the way to talk... (the claude command isn't installed)", "mood": "worried", "ok": False})
++                break
++            except (TimeoutError, EOFError, BrokenPipeError, OSError):
++                if session:
++                    session.proc.kill()
++                session = None
++        if result is None:
++            if attempt == 1:
++                emit({"id": rid, "type": "done", "say": "sorry, i got lost in thought... can you say that again?", "mood": "shy", "ok": False})
++            continue
++
++        raw_text = result.get("_text", "")
++        if result.get("is_error"):
++            low = raw_text.lower()
++            msg = ("i can't reach outside yet... could you log in with `claude` in a terminal?" if "log" in low
++                   else "hmm, my lightbulb flickered. try again?")
++            emit({"id": rid, "type": "done", "say": msg, "mood": "worried", "ok": False})
++            session.close()
++            session = None
++            continue
++
++        record_usage(result, session.model, kind)
++        say, mood, remember = split_reply(raw_text, final=True)
++        say = say or "..."
++        actions = run_actions(take_actions(raw_text)[1], text) if kind == "chat" else []
++        emit({"id": rid, "type": "done", "say": say, "mood": mood, "ok": True, "actions": actions})
++
++        memory = load_json(MEMORY_FILE, {})
++        history = memory.get("history", [])
++        for x in said:
++            history.append({"who": "Niko", "text": x["text"][:300]})
++        if kind == "chat":
++            history.append({"who": "User", "text": text})
++        history.append({"who": "Niko", "text": say[:300]})
++        notes = memory.get("notes", [])
++        if remember and remember.lower() not in (n.lower() for n in notes):
++            notes.append(remember[:120])
++        memory.update(history=history[-MAX_HISTORY:], notes=notes[-MAX_NOTES:])
++        save_json(MEMORY_FILE, memory)
++
++    if session:
++        session.close()
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except (KeyboardInterrupt, BrokenPipeError):
++        pass
+--- a/scripts/niko/steamlib.py
++++ b/scripts/niko/steamlib.py
+@@ -0,0 +1,164 @@
++#!/usr/bin/env python3
++import os, re, json, struct, time, glob
++
++STEAM_ROOTS = ["~/.local/share/Steam", "~/.steam/steam", "~/.var/app/com.valvesoftware.Steam/.local/share/Steam"]
++CACHE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "serpantinum", "niko", "steam.json")
++SKIP = re.compile(r"proton|steam linux runtime|steamworks common|redistributable|soundtrack|dedicated server|\bsdk\b", re.I)
++
++
++def steam_root():
++    for r in STEAM_ROOTS:
++        p = os.path.realpath(os.path.expanduser(r))
++        if os.path.isdir(os.path.join(p, "steamapps")):
++            return p
++    return None
++
++
++def read_appinfo(path):
++    data = open(path, "rb").read()
++    magic, _ = struct.unpack_from("<II", data, 0)
++    if magic == 0x07564429:
++        table_off = struct.unpack_from("<Q", data, 8)[0]
++        pos = 16
++        count = struct.unpack_from("<I", data, table_off)[0]
++        strings, p = [], table_off + 4
++        for _ in range(count):
++            end = data.index(b"\0", p)
++            strings.append(data[p:end].decode("utf-8", "replace"))
++            p = end + 1
++    elif magic == 0x07564428:
++        strings, pos, table_off = None, 8, len(data)
++    else:
++        raise ValueError("unsupported appinfo.vdf version")
++
++    def cstr(p):
++        end = data.index(b"\0", p)
++        return data[p:end].decode("utf-8", "replace"), end + 1
++
++    def key(p):
++        if strings is not None:
++            return strings[struct.unpack_from("<I", data, p)[0]], p + 4
++        return cstr(p)
++
++    def parse_kv(p, want, path, found):
++        while True:
++            t = data[p]; p += 1
++            if t == 0x08:
++                return p
++            k, p = key(p)
++            if t == 0x00:
++                p = parse_kv(p, want, path + (k,), found)
++            elif t == 0x01:
++                v, p = cstr(p)
++                if path + (k,) in want:
++                    found[path + (k,)] = v
++            elif t in (0x02, 0x04, 0x06):
++                p += 4
++            elif t == 0x07 or t == 0x0A:
++                p += 8
++            elif t == 0x03:
++                p += 4
++            else:
++                raise ValueError("bad kv type %d" % t)
++
++    want = {("appinfo", "common", "name"), ("appinfo", "common", "type")}
++    apps = {}
++    while pos < table_off - 4:
++        appid = struct.unpack_from("<I", data, pos)[0]
++        if appid == 0:
++            break
++        size = struct.unpack_from("<I", data, pos + 4)[0]
++        start = pos + 8
++        kv = start + 4 + 4 + 8 + 20 + 4 + 20
++        found = {}
++        try:
++            parse_kv(kv, want, (), found)
++        except Exception:
++            pass
++        name = found.get(("appinfo", "common", "name"))
++        if name:
++            apps[appid] = (name, found.get(("appinfo", "common", "type"), "").lower())
++        pos = start + size
++    return apps
++
++
++def read_localconfig(root):
++    out = {}
++    for f in glob.glob(os.path.join(root, "userdata", "*", "config", "localconfig.vdf")):
++        text = open(f, encoding="utf-8", errors="replace").read()
++        i = text.find('"apps"')
++        if i == -1:
++            continue
++        for m in re.finditer(r'"(\d+)"\s*\{([^{}]*)\}', text[i:]):
++            body = m.group(2)
++            pt = re.search(r'"Playtime"\s*"(\d+)"', body)
++            lp = re.search(r'"LastPlayed"\s*"(\d+)"', body)
++            if pt or lp:
++                a = int(m.group(1))
++                old = out.get(a, (0, 0))
++                out[a] = (max(old[0], int(pt.group(1)) if pt else 0), max(old[1], int(lp.group(1)) if lp else 0))
++    return out
++
++
++def installed(root):
++    ids = set()
++    lib = os.path.join(root, "steamapps", "libraryfolders.vdf")
++    paths = [root]
++    try:
++        paths += re.findall(r'"path"\s*"([^"]+)"', open(lib, encoding="utf-8", errors="replace").read())
++    except Exception:
++        pass
++    for p in set(paths):
++        for f in glob.glob(os.path.join(p, "steamapps", "appmanifest_*.acf")):
++            m = re.search(r"appmanifest_(\d+)\.acf", f)
++            if m:
++                ids.add(int(m.group(1)))
++    return ids
++
++
++def library():
++    root = steam_root()
++    if not root:
++        return []
++    sources = [os.path.join(root, "appcache", "appinfo.vdf")] + glob.glob(os.path.join(root, "userdata", "*", "config", "localconfig.vdf"))
++    stamp = max((os.path.getmtime(s) for s in sources if os.path.exists(s)), default=0)
++    try:
++        cached = json.load(open(CACHE))
++        if cached.get("stamp") == stamp:
++            return cached["games"]
++    except Exception:
++        pass
++    try:
++        names = read_appinfo(sources[0])
++    except Exception:
++        names = {}
++    play = read_localconfig(root)
++    inst = installed(root)
++    games = []
++    for appid in set(play) | inst:
++        name, typ = names.get(appid, ("", ""))
++        if not name or SKIP.search(name) or (typ and typ not in ("game", "") and not (typ == "application" and appid in inst)):
++            continue
++        minutes, last = play.get(appid, (0, 0))
++        games.append({"appid": appid, "name": name, "hours": round(minutes / 60, 1), "lastPlayed": last, "installed": appid in inst})
++    games.sort(key=lambda g: (-g["hours"], -g["lastPlayed"]))
++    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
++    with open(CACHE, "w") as f:
++        json.dump({"stamp": stamp, "games": games}, f)
++    return games
++
++
++def summary(games, limit=60):
++    now = time.time()
++    lines = []
++    for g in games[:limit]:
++        days = int((now - g["lastPlayed"]) / 86400) if g["lastPlayed"] else None
++        last = "never" if days is None else ("today" if days == 0 else f"{days}d ago")
++        lines.append(f"{g['appid']} {g['name']} ({g['hours']}h, last {last}{', installed' if g['installed'] else ''})")
++    return "\n".join(lines)
++
++
++if __name__ == "__main__":
++    g = library()
++    print(json.dumps(g[:15], indent=1))
++    print(len(g), "games")
+--- a/scripts/niko/musiclib.py
++++ b/scripts/niko/musiclib.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++import os, re, json, random, sqlite3
++
++SONORA_CACHE = os.path.expanduser("~/.cache/sonora/cache.sqlite")
++SONORA_STATE = os.path.expanduser("~/.local/share/sonora/state.sqlite")
++STOP = {"play", "some", "song", "songs", "music", "listen", "listening", "what", "should", "something", "please",
++        "niko", "from", "with", "that", "this", "playlist", "playlists", "track", "tracks", "want", "like", "the", "and"}
++
++
++def _ro(path):
++    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
++
++
++def _snapshot(con, key):
++    row = con.execute("select value from snapshots where key=?", (key,)).fetchone()
++    return json.loads(row[0]).get("rows", []) if row else []
++
++
++def library():
++    songs, playlists, recent = [], [], []
++    if os.path.exists(SONORA_CACHE):
++        try:
++            con = _ro(SONORA_CACHE)
++            for r in _snapshot(con, "spotify/songs"):
++                if r.get("playable", True):
++                    songs.append({"name": r["name"], "artists": r.get("artists", ""), "uri": "spotify:track:" + r["id"], "src": "spotify"})
++            for r in _snapshot(con, "apple/songs"):
++                if r.get("playable", True):
++                    songs.append({"name": r["name"], "artists": r.get("artists", ""), "uri": "https://music.apple.com/us/song/" + r["id"], "src": "apple"})
++            for r in _snapshot(con, "spotify/playlists"):
++                if r.get("track_count", 1):
++                    playlists.append({"name": r["name"], "tracks": r.get("track_count", 0), "uri": "spotify:playlist:" + r["id"], "src": "spotify"})
++            for r in _snapshot(con, "apple/playlists"):
++                playlists.append({"name": r["name"], "uri": "https://music.apple.com/library/playlist/" + r["id"], "src": "apple"})
++            con.close()
++        except Exception:
++            pass
++    if os.path.exists(SONORA_STATE):
++        try:
++            con = _ro(SONORA_STATE)
++            seen = set()
++            for name, artists, provider, tid in con.execute(
++                    "select name, artists, provider, track_id from plays order by played_at desc limit 60"):
++                if (provider, tid) in seen:
++                    continue
++                seen.add((provider, tid))
++                uri = "spotify:track:" + tid if provider == "spotify" else ("https://music.apple.com/us/song/" + tid if provider == "apple" else "")
++                if uri:
++                    recent.append({"name": name, "artists": artists or "", "uri": uri, "src": provider})
++            con.close()
++        except Exception:
++            pass
++    return {"songs": songs, "playlists": playlists, "recent": recent[:12]}
++
++
++def sonora_provider():
++    if not os.path.exists(SONORA_STATE):
++        return None
++    try:
++        con = _ro(SONORA_STATE)
++        row = con.execute("select provider from plays order by played_at desc limit 1").fetchone()
++        con.close()
++        return row[0] if row else None
++    except Exception:
++        return None
++
++
++def prompt_items(text, lib=None, sources=None):
++    lib = lib or library()
++    if sources:
++        lib = {k: [i for i in v if i["src"] in sources] for k, v in lib.items()}
++    words = [w for w in re.findall(r"[\w']+", text.lower()) if len(w) > 2 and w not in STOP]
++
++    def hits(item):
++        hay = (item["name"] + " " + item.get("artists", "")).lower()
++        return sum(1 for w in words if w in hay)
++
++    picked, codes, lines = [], {}, []
++    matches = sorted((s for s in lib["songs"] if hits(s)), key=hits, reverse=True)[:10] if words else []
++    pl_matches = [p for p in lib["playlists"] if words and hits(p)]
++    pool = [s for s in lib["songs"] if s not in matches]
++    sample = random.sample(pool, min(4 if matches else 10, len(pool)))
++
++    def add(prefix, items, label):
++        if not items:
++            return
++        lines.append(label)
++        for it in items:
++            code = f"{prefix}{len([c for c in codes if c.startswith(prefix)]) + 1}"
++            codes[code] = it
++            extra = f" - {it['artists'][:40]}" if it.get("artists") else ""
++            lines.append(f"{code} {it['name']}{extra}")
++
++    add("M", matches, "songs matching what they said:")
++    add("P", pl_matches[:5] + [p for p in lib["playlists"] if p not in pl_matches][:(5 if matches or pl_matches else 15)], "their playlists:")
++    add("R", lib["recent"][:5], "recently played:")
++    add("S", sample, "some of their saved songs:")
++    return "\n".join(lines), codes
++
++
++if __name__ == "__main__":
++    import sys
++    lib = library()
++    print(len(lib["songs"]), "songs,", len(lib["playlists"]), "playlists,", len(lib["recent"]), "recent")
++    block, codes = prompt_items(" ".join(sys.argv[1:]), lib)
++    print(block[:1500])
++    print("chars", len(block), "~tokens", len(block) // 4)
+--- a/scripts/niko/niko_play.sh
++++ b/scripts/niko/niko_play.sh
+@@ -0,0 +1,44 @@
++#!/usr/bin/env bash
++uri="$1"
++
++spotify_app() {
++    if busctl --user status org.mpris.MediaPlayer2.spotify >/dev/null 2>&1; then
++        busctl --user call org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player OpenUri s "$uri" >/dev/null 2>&1 && return 0
++        return 3
++    fi
++    if command -v spotify >/dev/null 2>&1; then
++        setsid spotify --uri="$uri" >/dev/null 2>&1 & return 0
++    elif command -v spotify-launcher >/dev/null 2>&1; then
++        setsid spotify-launcher -- --uri="$uri" >/dev/null 2>&1 & return 0
++    elif flatpak info com.spotify.Client >/dev/null 2>&1; then
++        setsid flatpak run com.spotify.Client --uri="$uri" >/dev/null 2>&1 & return 0
++    fi
++    return 5
++}
++
++sonora_play() {
++    command -v sonora >/dev/null 2>&1 || return 5
++    if ! pgrep -x sonora >/dev/null; then
++        setsid sonora >/dev/null 2>&1 &
++        for _ in $(seq 20); do sleep 0.5; timeout 3 sonora providers >/dev/null 2>&1 && break; done
++    fi
++    if [ -n "$(timeout 5 sonora providers 2>/dev/null)" ]; then
++        if ! timeout 5 sonora provider 2>/dev/null | grep -qi "$1"; then
++            timeout 60 sonora provider "$1" >/dev/null 2>&1 || return 3
++        fi
++        timeout 60 sonora play "$uri" >/dev/null 2>&1 && return 0
++        return 3
++    fi
++    sonora "$uri" >/dev/null 2>&1
++    return 4
++}
++
++case "$uri" in
++    spotify:*|https://open.spotify.com/*)
++        spotify_app; code=$?
++        [ $code -eq 5 ] && { sonora_play spotify; code=$?; }
++        exit $code ;;
++    https://music.apple.com/*)
++        sonora_play apple; exit $? ;;
++    *) exit 2 ;;
++esac
+--- a/scripts/niko/niko
++++ b/scripts/niko/niko
+@@ -0,0 +1,447 @@
++#!/usr/bin/env python3
++import os, sys, time, json, signal, shutil, subprocess, datetime
++
++HOME = os.path.expanduser("~")
++SRC = os.environ.get("SERPANTINUM_DIR") or os.path.join(HOME, ".local/share/serpantinum/src")
++SHELL_QML = os.path.join(SRC, "quickshell", "NikoShell.qml")
++STATE = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local/state")), "serpantinum", "niko")
++RUN = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "serpantinum", "niko")
++PIDFILE = os.path.join(RUN, "niko.pid")
++LOGFILE = os.path.join(RUN, "niko.log")
++DISABLED = os.path.join(STATE, "disabled")
++CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "serpantinum", "niko.json")
++CLK = os.sysconf("SC_CLK_TCK")
++
++BOLD, DIM, OK, BAD, RESET = ("\033[1m", "\033[2m", "\033[32m", "\033[31m", "\033[0m") if sys.stdout.isatty() else ("",) * 5
++
++
++def read(path, default=""):
++    try:
++        with open(path) as f:
++            return f.read()
++    except Exception:
++        return default
++
++
++def load_json(path):
++    try:
++        return json.loads(read(path, "{}"))
++    except Exception:
++        return {}
++
++
++def is_niko(pid):
++    return SHELL_QML.encode() in read_bytes(f"/proc/{pid}/cmdline")
++
++
++def read_bytes(path):
++    try:
++        with open(path, "rb") as f:
++            return f.read()
++    except Exception:
++        return b""
++
++
++def watcher_pids():
++    me = os.getpid()
++    return [int(d) for d in os.listdir("/proc") if d.isdigit() and int(d) != me
++            and read_bytes(f"/proc/{d}/cmdline").split(b"\0")[1:3] == [os.path.realpath(__file__).encode(), b"_watch"]]
++
++
++def rpc_pids():
++    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), "niko_rpc.py").encode()
++    return [int(d) for d in os.listdir("/proc") if d.isdigit() and script in read_bytes(f"/proc/{d}/cmdline").split(b"\0")[:3]]
++
++
++def find_pid():
++    try:
++        pid = int(read(PIDFILE).strip())
++        if is_niko(pid):
++            return pid
++    except ValueError:
++        pass
++    for d in os.listdir("/proc"):
++        if d.isdigit() and is_niko(int(d)):
++            return int(d)
++    return None
++
++
++def shell_env():
++    env = dict(os.environ, SERPANTINUM_DIR=SRC)
++    try:
++        out = subprocess.run(["bash", "-c", 'source "$SERPANTINUM_DIR/scripts/caching.sh" >/dev/null 2>&1; env -0'],
++                             env=env, capture_output=True, timeout=10).stdout
++        for item in out.split(b"\0"):
++            k, sep, v = item.partition(b"=")
++            if sep:
++                env[k.decode(errors="replace")] = v.decode(errors="replace")
++    except Exception:
++        pass
++    return env
++
++
++def run(auto=False):
++    if auto and os.path.exists(DISABLED):
++        return 0
++    if not auto and os.path.exists(DISABLED):
++        os.remove(DISABLED)
++    pid = find_pid() or (watcher_pids() or [None])[0]
++    if pid:
++        if not auto:
++            print(f"Niko is already running (pid {pid}).")
++        return 0
++    qs = shutil.which("quickshell") or shutil.which("qs")
++    if not qs:
++        print("Can't find quickshell.")
++        return 1
++    if not os.environ.get("WAYLAND_DISPLAY"):
++        print("Niko needs your desktop session; run this from a terminal inside Hyprland.")
++        return 1
++    if not os.path.exists(SHELL_QML):
++        print(f"Niko's files are missing ({SHELL_QML}). Run ~/.config/serpantinum-mods/apply.sh")
++        return 1
++    os.makedirs(RUN, exist_ok=True)
++    if not rpc_pids():
++        subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "niko_rpc.py")],
++                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
++    with open(LOGFILE, "w") as log:
++        proc = subprocess.Popen([sys.executable, os.path.realpath(__file__), "_watch"], stdin=subprocess.DEVNULL, stdout=log,
++                                stderr=subprocess.STDOUT, start_new_session=True, cwd=HOME, env=shell_env())
++    for _ in range(30):
++        time.sleep(0.1)
++        if proc.poll() is not None:
++            print(f"{BAD}Niko couldn't start.{RESET} Last lines of {LOGFILE}:")
++            print("\n".join(read(LOGFILE).splitlines()[-8:]))
++            return 1
++    pid = find_pid()
++    if not auto:
++        print(f"{OK}Niko is running{RESET} (pid {pid or proc.pid}).")
++    return 0
++
++
++def watch():
++    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
++    qs = shutil.which("quickshell") or shutil.which("qs")
++    env = dict(shell_env(), QS_DISABLE_CRASH_HANDLER="1")
++    starts = []
++    return _watch_loop(qs, env, starts)
++
++
++def _watch_loop(qs, env, starts):
++    while not os.path.exists(DISABLED):
++        now = time.time()
++        starts = [t for t in starts if now - t < 120]
++        if len(starts) >= 5:
++            return 1
++        starts.append(now)
++        with open(LOGFILE, "a") as log:
++            proc = subprocess.Popen([qs, "-p", SHELL_QML], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
++                                    cwd=HOME, env=env)
++        with open(PIDFILE, "w") as f:
++            f.write(str(proc.pid))
++        if proc.wait() == 0:
++            return 0
++        time.sleep(2)
++    return 0
++
++
++def kill(keep_rpc=False):
++    os.makedirs(STATE, exist_ok=True)
++    open(DISABLED, "w").close()
++    for w in watcher_pids() + ([] if keep_rpc else rpc_pids()):
++        os.kill(w, signal.SIGTERM)
++    pid = find_pid()
++    if not pid:
++        print("Niko isn't running. (Niko will stay off until `niko run`.)")
++        return 0
++    os.kill(pid, signal.SIGTERM)
++    for _ in range(30):
++        time.sleep(0.1)
++        if not is_niko(pid):
++            break
++    else:
++        os.kill(pid, signal.SIGKILL)
++    try:
++        os.remove(PIDFILE)
++    except FileNotFoundError:
++        pass
++    print("Niko stopped. Niko stays off after restarts until you run `niko run`.")
++    return 0
++
++
++def proc_ticks(pid):
++    f = read(f"/proc/{pid}/stat").rsplit(")", 1)[-1].split()
++    return int(f[11]) + int(f[12]), int(f[13]) + int(f[14]), int(f[19])
++
++
++def descendants(pid):
++    kids = {}
++    for d in os.listdir("/proc"):
++        if d.isdigit():
++            st = read(f"/proc/{d}/stat").rsplit(")", 1)
++            if len(st) == 2:
++                kids.setdefault(int(st[1].split()[1]), []).append(int(d))
++    out, todo = [], [pid]
++    while todo:
++        for c in kids.get(todo.pop(), []):
++            out.append(c)
++            todo.append(c)
++    return out
++
++
++def pss_kib(pid):
++    for line in read(f"/proc/{pid}/smaps_rollup").splitlines():
++        if line.startswith("Pss:"):
++            return int(line.split()[1])
++    return 0
++
++
++def gpu_sample(pid):
++    clients = {}
++    try:
++        fds = os.listdir(f"/proc/{pid}/fdinfo")
++    except Exception:
++        return {}
++    for fd in fds:
++        info = {}
++        for line in read(f"/proc/{pid}/fdinfo/{fd}").splitlines():
++            if line.startswith("drm-"):
++                k, _, v = line.partition(":")
++                info[k.strip()] = v.strip()
++        cid = info.get("drm-client-id")
++        if cid and cid not in clients:
++            clients[cid] = info
++    engines, mem = {}, {}
++    driver = ""
++    for info in clients.values():
++        driver = info.get("drm-driver", driver)
++        for k, v in info.items():
++            if k.startswith("drm-engine-") and not k.startswith("drm-engine-capacity"):
++                engines[k[11:]] = engines.get(k[11:], 0) + int(v.split()[0])
++            elif k.startswith(("drm-memory-", "drm-resident-")) and v.endswith("KiB"):
++                mem[k] = mem.get(k, 0) + int(v.split()[0])
++    return {"driver": driver, "engines": engines, "mem": mem}
++
++
++def fmt_kib(kib):
++    return f"{kib / 1024:.1f} MiB" if kib < 1024 * 1024 else f"{kib / 1048576:.2f} GiB"
++
++
++def fmt_dur(sec):
++    sec = int(sec)
++    h, m = sec // 3600, (sec % 3600) // 60
++    return f"{h}h {m}m" if h else (f"{m}m {sec % 60}s" if m else f"{sec}s")
++
++
++def fmt_tokens(n):
++    return f"{n / 1000:.1f}k" if n >= 10000 else str(n)
++
++
++def status():
++    pid = find_pid()
++    off = os.path.exists(DISABLED)
++    print(f"{BOLD}Niko{RESET}")
++    if not pid:
++        print(f"  state      {BAD}not running{RESET}" + ("  (turned off, `niko run` to start)" if off else "  (`niko run` to start)"))
++    else:
++        uptime = float(read("/proc/uptime", "0").split()[0])
++        own0, kids0, start = proc_ticks(pid)
++        helpers = descendants(pid)
++        h0 = {c: sum(proc_ticks(c)[:1]) for c in helpers if read(f"/proc/{c}/stat")}
++        g0, t0 = gpu_sample(pid), time.time()
++        time.sleep(1.0)
++        own1, kids1, _ = proc_ticks(pid)
++        h1 = {c: sum(proc_ticks(c)[:1]) for c in h0 if read(f"/proc/{c}/stat")}
++        g1, t1 = gpu_sample(pid), time.time()
++        elapsed = max(1e-6, uptime - start / CLK)
++        cpu_now = 100 * (own1 - own0) / CLK / (t1 - t0)
++        cpu_avg = 100 * own1 / CLK / elapsed
++        roll = {}
++        for line in read(f"/proc/{pid}/smaps_rollup").splitlines():
++            parts = line.split()
++            if len(parts) >= 2 and parts[0].endswith(":") and parts[1].isdigit():
++                roll[parts[0][:-1]] = int(parts[1])
++        threads = read(f"/proc/{pid}/status")
++        threads = next((l.split()[1] for l in threads.splitlines() if l.startswith("Threads:")), "?")
++
++        print(f"  state      {OK}running{RESET}  (pid {pid}, up {fmt_dur(elapsed)}, {threads} threads)")
++        print(f"  cpu        {cpu_now:.1f}% now, {cpu_avg:.2f}% average since start")
++        print(f"  ram        {fmt_kib(roll.get('Pss', 0))} (PSS), {fmt_kib(roll.get('Rss', 0))} resident")
++        if h1:
++            names = sorted({os.path.basename(read(f"/proc/{c}/comm").strip()) for c in h1})
++            hcpu = 100 * sum(h1[c] - h0.get(c, h1[c]) for c in h1) / CLK / (t1 - t0)
++            print(f"  brain      {len(h1)} processes ({', '.join(names)}): {hcpu:.1f}% cpu, {fmt_kib(sum(pss_kib(c) for c in h1))} RAM  {DIM}(keeps Claude ready for fast replies){RESET}")
++        if g1.get("engines"):
++            busy = {e: (g1["engines"].get(e, 0) - g0.get("engines", {}).get(e, 0)) / 1e9 / (t1 - t0) * 100 for e in g1["engines"]}
++            main = max(busy, key=lambda e: g1["engines"][e])
++            vram = g1["mem"].get("drm-memory-vram", g1["mem"].get("drm-resident-vram", 0))
++            gtt = g1["mem"].get("drm-memory-gtt", g1["mem"].get("drm-resident-gtt", 0))
++            mem = f"{fmt_kib(vram)} VRAM" + (f", {fmt_kib(gtt)} shared" if gtt else "")
++            extra = ", ".join(f"{e} {v:.1f}%" for e, v in busy.items() if e != main and v >= 0.05)
++            print(f"  gpu        {busy[main]:.1f}% busy ({main}{', ' + extra if extra else ''}), {mem}  {DIM}[{g1['driver']}]{RESET}")
++        else:
++            print(f"  gpu        {DIM}no per-process GPU stats available{RESET}")
++
++    cfg = {"model": "haiku", "dailyLimit": 0, "proactiveLimit": 10}
++    cfg.update(load_json(CONFIG))
++    stats = load_json(os.path.join(STATE, "stats.json"))
++    today = stats.get("days", {}).get(datetime.date.today().isoformat(), {})
++    total = stats.get("total", {})
++
++    def line(b):
++        if not b.get("calls"):
++            return "no chats"
++        inp = b.get("input", 0) + b.get("cacheRead", 0) + b.get("cacheWrite", 0)
++        own = b.get("proactive", 0)
++        return (f"{b['calls']} replies" + (f" ({own} started by Niko)" if own else "") + f", {fmt_tokens(inp)} in / {fmt_tokens(b.get('output', 0))} out"
++                f"  {DIM}(cached reads {fmt_tokens(b.get('cacheRead', 0))}){RESET}")
++
++    limit = int(cfg.get("dailyLimit") or 0)
++    print(f"\n{BOLD}Claude{RESET}  {DIM}model {cfg.get('model')}, " + (f"limit {limit} chats/day" if limit else "no daily limit")
++          + f", Niko starts up to {cfg.get('proactiveLimit')} a day{RESET}")
++    print(f"  today      {line(today)}")
++    print(f"  all time   {line(total)}")
++    last = stats.get("lastCall")
++    if last:
++        print(f"  last chat  {last.get('input', 0) + last.get('cacheRead', 0) + last.get('cacheWrite', 0)} in / {last.get('output', 0)} out tokens  {DIM}({stats.get('lastReply', '')}){RESET}")
++    if total.get("costUsd"):
++        print(f"  {DIM}API-price equivalent so far: ${total['costUsd']:.4f} (on Pro this comes out of your plan's usage, not billed){RESET}")
++    return 0
++
++
++def skins(args):
++    import re, shlex
++    marker = os.path.join(STATE, "skin.txt")
++
++    def clear():
++        for f in os.listdir(STATE) if os.path.isdir(STATE) else []:
++            if f.startswith("skin-"):
++                os.remove(os.path.join(STATE, f))
++
++    def revert():
++        clear()
++        if os.path.exists(marker):
++            os.remove(marker)
++        print("Back to the normal Niko model.")
++        return 0
++
++    if args and args[0] in ("reset", "revert", "default", "normal"):
++        return revert()
++    if args:
++        raw = " ".join(args)
++    else:
++        print(f"{BOLD}Niko skins{RESET}")
++        print(f"  Send the path of an image (png, jpg, webp, gif, bmp, svg); a transparent PNG looks best.")
++        print(f"  Type {BOLD}r{RESET} to go back to the normal model, or press Enter to cancel.")
++        try:
++            raw = input("Image path: ")
++        except (EOFError, KeyboardInterrupt):
++            print()
++            return 1
++    raw = raw.strip()
++    if not raw:
++        return 0
++    if raw.lower() in ("r", "reset", "revert"):
++        return revert()
++    try:
++        parts = shlex.split(raw)
++        raw = parts[0] if len(parts) == 1 else raw
++    except ValueError:
++        pass
++    path = os.path.abspath(os.path.expanduser(re.sub(r"^file://", "", raw)))
++    if not os.path.isfile(path):
++        print(f"{BAD}No such file:{RESET} {path}")
++        return 1
++    ext = os.path.splitext(path)[1].lower()
++    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"):
++        print(f"{BAD}That doesn't look like an image{RESET} (png, jpg, webp, gif, bmp, svg).")
++        return 1
++    os.makedirs(STATE, exist_ok=True)
++    clear()
++    dest = os.path.join(STATE, f"skin-{int(time.time())}{ext}")
++    shutil.copyfile(path, dest)
++    name = re.sub(r"[_\s]+", " ", os.path.splitext(os.path.basename(path))[0]).strip()[:30] or "Niko"
++    with open(marker, "w") as f:
++        f.write(dest + "\n" + name + "\n")
++    print(f"Niko now looks like {os.path.basename(path)} and goes by the name {name}." + ("" if find_pid() else " (Niko isn't running: `niko run`.)"))
++    print("The name follows the file name. Revert with `niko skins` then r, or `niko skins reset`.")
++    return 0
++
++
++PERSONALITIES = [
++    ("default", "Default Niko", "kind, gentle, curious kid"),
++    ("tsundere", "Tsundere Niko", "prickly and embarrassed, secretly cares a lot"),
++    ("dumb", "Dumb Niko", "confidently wrong, easily distracted"),
++    ("sarcastic", "Sarcastic Niko", "dry, deadpan, playful roasting"),
++    ("chaotic", "Chaotic Niko", "hyper gremlin energy"),
++    ("cheerleader", "Cheerleader Niko", "hypes up everything you do"),
++    ("custom", "Custom", "describe your own"),
++]
++
++
++def personality(args):
++    cfg = load_json(CONFIG)
++    current = cfg.get("personality", "default")
++    names = [p[0] for p in PERSONALITIES]
++    choice = args[0].lower() if args else ""
++    if not choice:
++        print(f"{BOLD}Niko personality{RESET}  (now: {current})")
++        for i, (key, label, blurb) in enumerate(PERSONALITIES, 1):
++            print(f"  {i}. {label:<18}{DIM}{blurb}{RESET}{'  <- current' if key == current else ''}")
++        try:
++            choice = input("Pick a number or name (Enter to cancel): ").strip().lower()
++        except (EOFError, KeyboardInterrupt):
++            print()
++            return 1
++        if not choice:
++            return 0
++    if choice.isdigit() and 1 <= int(choice) <= len(names):
++        choice = names[int(choice) - 1]
++    choice = {"normal": "default", "stupid": "dumb", "idiot": "dumb", "gremlin": "chaotic"}.get(choice, choice)
++    if choice not in names:
++        print(f"{BAD}Unknown personality:{RESET} {choice}  ({', '.join(names)})")
++        return 1
++    if choice == "custom":
++        text = " ".join(args[1:]).strip() if len(args) > 1 else ""
++        if not text:
++            try:
++                text = input("Describe Niko's personality: ").strip()
++            except (EOFError, KeyboardInterrupt):
++                print()
++                return 1
++        if not text:
++            return 0
++        cfg["customPersonality"] = text[:500]
++    cfg["personality"] = choice
++    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
++    with open(CONFIG, "w") as f:
++        json.dump(cfg, f, indent=2)
++    label = next(p[1] for p in PERSONALITIES if p[0] == choice)
++    print(f"Niko is now: {label}. It applies from his next reply.")
++    return 0
++
++
++def main():
++    cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
++    if cmd == "run":
++        return run(auto="--auto" in sys.argv[2:])
++    if cmd in ("kill", "stop"):
++        return kill()
++    if cmd == "_watch":
++        return watch()
++    if cmd == "restart":
++        kill(keep_rpc=True)
++        time.sleep(1)
++        return run()
++    if cmd in ("personality", "personalities"):
++        return personality(sys.argv[2:])
++    if cmd == "skins":
++        return skins(sys.argv[2:])
++    if cmd == "status":
++        return status()
++    print(__doc__.strip())
++    return 0 if cmd in ("help", "-h", "--help") else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+--- a/quickshell/dock/NikoPet.qml
++++ b/quickshell/dock/NikoPet.qml
+@@ -0,0 +1,1566 @@
++import QtQuick
++import QtQuick3D
++import Quickshell
++import Quickshell.Io
++import Quickshell.Wayland
++import Quickshell.Services.Mpris
++import Quickshell.Hyprland
++import "../"
++import "../reusables"
++import "niko"
++
++Item {
++    id: pet
++
++    required property var info
++
++    readonly property real fullHeight: Math.round(info.s(Math.max(32, info.elementSize)) * 3.6)
++    readonly property string brainScript: Caching.serpantinumDir + "/scripts/niko/niko_brain.py"
++    readonly property string skinFile: Caching.getStateDir("niko") + "/skin.txt"
++    property string skinPath: ""
++    readonly property string displayName: skinName !== "" ? skinName : "Niko"
++    property string skinName: ""
++    readonly property string placeFile: Caching.getStateDir("niko") + "/place.json"
++    readonly property string configFile: Quickshell.env("HOME") + "/.config/serpantinum/niko.json"
++    property double lastInteraction: Date.now()
++
++    property bool chatOpen: false
++    property bool thinking: false
++    property bool sleeping: idleMonitor.isIdle || napping
++    property bool napping: false
++    property double quietUntil: 0
++    readonly property bool quiet: Date.now() < quietUntil || quietTick < 0
++    property int quietTick: 0
++    Timer { interval: 60000; running: true; repeat: true; onTriggered: pet.quietTick++ }
++    property double sleptAt: 0
++    property string mood: "neutral"
++    property var lastReaction: ({})
++    property real sitTarget: 0
++
++    property string bubbleText: ""
++    property int shownChars: 0
++    readonly property bool talking: typeTimer.running
++    readonly property bool bubbleVisible: chatOpen || bubbleText !== "" || sleeping
++
++    readonly property alias hitArea: hit
++    readonly property alias bubbleArea: bubble
++
++    visible: !info.hidden && placeLoaded && footX >= 0
++
++    property string place: "floor"
++    property real footX: -1
++    property real footY: 0
++    property bool falling: false
++    property bool placeLoaded: false
++
++    readonly property real screenW: parent ? parent.width : 1920
++    readonly property real screenH: parent ? parent.height : 1080
++
++    function floorAt(fx) {
++        if (info.dockShown && fx >= info.dockLeft - pet.width * 0.25 && fx <= info.dockRight + pet.width * 0.25)
++            return info.dockTop + info.s(10);
++        return pet.screenH;
++    }
++
++    readonly property real restingFootY: place === "bar" ? info.barBottom - info.s(1) : floorAt(footX)
++
++    height: place === "bar" ? Math.max(info.s(24), Math.round(info.barBottom - info.barTop - info.s(2))) : fullHeight
++    width: Math.round(height * (place === "bar" ? 0.9 : 0.78))
++    x: Math.round(footX - width / 2)
++    y: Math.round((place === "held" || falling ? footY : restingFootY) - height)
++    Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
++
++    function defaultFootX() {
++        return info.dockShown ? info.dockRight - pet.fullHeight * 0.06 : pet.screenW - pet.fullHeight;
++    }
++
++    function savePlace() {
++        let data = JSON.stringify({ place: pet.place === "held" ? "floor" : pet.place, xFrac: pet.footX / Math.max(1, pet.screenW) });
++        Quickshell.execDetached(["sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && printf '%s' \"$1\" > \"$2\"", "_", data, pet.placeFile]);
++    }
++
++    FileView {
++        path: pet.skinFile
++        watchChanges: true
++        onFileChanged: reload()
++        onLoaded: {
++            let lines = (typeof text === "function" ? text() : text).split("\n");
++            pet.skinPath = lines[0].trim();
++            pet.skinName = pet.skinPath !== "" ? (lines[1] || "").trim() : "";
++        }
++        onLoadFailed: { pet.skinPath = ""; pet.skinName = ""; }
++    }
++
++    FileView {
++        path: pet.placeFile
++        onLoaded: {
++            try {
++                let d = JSON.parse(typeof text === "function" ? text() : text);
++                pet.place = (d.place === "bar" && info.barAvailable) ? "bar" : "floor";
++                pet.footX = Math.max(pet.width / 2, Math.min(pet.screenW - pet.width / 2, d.xFrac * pet.screenW));
++            } catch (e) {}
++            pet.placeLoaded = true;
++        }
++        onLoadFailed: pet.placeLoaded = true
++    }
++
++    onPlaceLoadedChanged: if (placeLoaded && footX < 0) footX = defaultFootX()
++    Connections {
++        target: pet.info
++        function onBarAvailableChanged() { if (!pet.info.barAvailable && pet.place === "bar") pet.place = "floor"; }
++    }
++
++    function touch() { pet.lastInteraction = Date.now(); }
++
++    function pickUp() {
++        pet.touch();
++        pet.footY = pet.y + pet.height;
++        pet.place = "held";
++        pet.falling = false;
++        fallAnim.stop();
++        pet.standUp();
++        if (pet.chatOpen) pet.closeChat();
++        pet.say(pet.pick(["w-whoa!", "where are we going?", "wheee!", "ah! i'm up high!", "hehe, careful!"]), "excited", 1800);
++    }
++
++    function drop() {
++        pet.touch();
++        if (info.barAvailable && pet.footY - pet.fullHeight * 0.5 < info.barBottom + info.s(24)) {
++            pet.place = "bar";
++            pet.say(pet.pick(["it's cozy up here!", "i can see everything from here...", "a little shelf, just for me?"]), "happy", 2600);
++        } else {
++            pet.place = "floor";
++            pet.falling = true;
++            fallAnim.from = pet.footY;
++            fallAnim.to = pet.floorAt(pet.footX);
++            fallAnim.duration = Math.min(700, Math.max(200, Math.abs(fallAnim.to - fallAnim.from) * 0.9));
++            fallAnim.restart();
++        }
++        niko3d.lean = 0;
++        pet.savePlace();
++    }
++
++    NumberAnimation {
++        id: fallAnim
++        target: pet
++        property: "footY"
++        easing.type: Easing.OutBounce
++        onFinished: {
++            pet.falling = false;
++            if (Math.random() < 0.4) pet.say(pet.pick(["oof!", "*lands softly*", "safe!"]), "happy", 1600);
++        }
++    }
++
++
++    property var saidLog: []
++    function logSaid(text) {
++        if (!text || text === "..." || text.length < 4) return;
++        let now = Date.now();
++        pet.saidLog = pet.saidLog.filter(e => now - e.at < 20 * 60000).concat([{ text: text, at: now }]).slice(-4);
++    }
++
++    function say(text, newMood, holdMs) {
++        pet.logSaid(text);
++        pet.bubbleText = text;
++        pet.shownChars = 0;
++        typeTimer.restart();
++        if (newMood) pet.setMood(newMood);
++        bubbleHide.interval = holdMs || Math.max(4500, text.length * 90);
++        if (!pet.chatOpen) bubbleHide.restart();
++    }
++
++    function react(key, cooldownMs, text, newMood) {
++        let now = Date.now();
++        if (pet.chatOpen || pet.thinking || pet.sleeping || pet.place === "held") return false;
++        if (pet.quiet && ["selftalk", "app", "song", "near", "wallpaper", "break"].some(k => key.startsWith(k))) return false;
++        if (pet.lastReaction[key] && now - pet.lastReaction[key] < cooldownMs) return false;
++        pet.lastReaction[key] = now;
++        pet.say(text, newMood);
++        return true;
++    }
++
++    function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
++
++    Timer {
++        id: typeTimer
++        interval: 26
++        repeat: true
++        onTriggered: {
++            if (pet.shownChars >= pet.bubbleText.length) stop();
++            else pet.shownChars++;
++        }
++    }
++
++    Timer {
++        id: bubbleHide
++        onTriggered: if (!pet.chatOpen) pet.bubbleText = ""
++    }
++
++
++    property string baseFace: "neutral"
++    property bool mouthOpen: false
++
++    readonly property string shownFace: {
++        if (pet.sleeping) return "asleep";
++        if (pet.talking && pet.mouthOpen) {
++            if (baseFace === "happy" || baseFace === "laugh") return "laugh";
++            if (baseFace === "neutral" || baseFace === "smile" || baseFace === "surprised") return "talk";
++        }
++        return baseFace;
++    }
++
++    Timer {
++        running: pet.talking
++        interval: 110
++        repeat: true
++        onTriggered: pet.mouthOpen = !pet.mouthOpen
++        onRunningChanged: if (!running) pet.mouthOpen = false
++    }
++
++    function setMood(m) {
++        pet.mood = m;
++        const faces = { neutral: "neutral", happy: "smile", excited: "smile", curious: "neutral", shy: "smile",
++                        sleepy: "sleepy", worried: "worried", sad: "sad", surprised: "surprised" };
++        pet.baseFace = faces[m] || "neutral";
++        niko3d.headTilt = (m === "curious") ? 12 : (m === "worried" ? -8 : (m === "sad" ? -6 : 0));
++        niko3d.headTurn = (m === "shy") ? -20 : 0;
++        niko3d.sleepy = (m === "sad") ? 0.35 : (m === "sleepy" ? 0.6 : 0);
++        niko3d.bulbGlow = (m === "sad") ? 0.55 : (m === "worried" ? 0.75 : 1.0);
++        if (m === "happy" || m === "excited") squint.restart();
++        if (m === "excited") { hop.loops = 2; hop.restart(); pet.waveHello(); }
++        else if ((m === "happy" || m === "surprised") && niko3d.sit < 0.5) { hop.loops = 1; hop.restart(); }
++        moodDecay.restart();
++    }
++
++    Timer {
++        id: moodDecay
++        interval: 14000
++        onTriggered: if (!pet.thinking) pet.setMoodQuiet()
++    }
++
++    function setMoodQuiet() {
++        pet.mood = "neutral";
++        pet.baseFace = "neutral";
++        niko3d.sleepy = 0; niko3d.headTilt = 0; niko3d.headTurn = 0; niko3d.bulbGlow = 1.0;
++    }
++
++    SequentialAnimation {
++        id: squint
++        PauseAnimation { duration: 120 }
++        PropertyAction { target: pet; property: "baseFace"; value: "happy" }
++        PauseAnimation { duration: 1100 }
++        ScriptAction { script: if (pet.baseFace === "happy") pet.baseFace = "smile" }
++    }
++
++    function waveHello() {
++        if (pet.place === "held") return;
++        waveAnim.restart();
++    }
++
++
++    function contextLine() {
++        let parts = [Qt.formatDateTime(new Date(), "dddd HH:mm")];
++        if (env.temp !== "") parts.push("weather " + env.temp);
++        let p = env.player();
++        if (p) parts.push("music playing: '" + p.trackTitle + "'" + (p.trackArtist ? " by " + p.trackArtist : ""));
++        if (env.ramPercent > 0) parts.push("RAM " + env.ramPercent + "%");
++        if (env.uptimeHours >= 1) parts.push("computer on for " + Math.floor(env.uptimeHours) + "h");
++        if (apps.current !== "") {
++            let mins = Math.round((Date.now() - apps.since) / 60000);
++            if (apps.video !== "" && pet.config.shareVideoTitles) parts.push("watching on " + apps.site + ": '" + apps.video + "'");
++            parts.push("user is in: " + apps.current + (apps.site ? " on " + apps.site : "") + (pet.config.shareWindowTitles && apps.title ? " ('" + apps.title.substring(0, 80) + "')" : "") + (mins >= 5 ? " for " + mins + " min" : ""));
++        }
++        return parts.join(", ");
++    }
++
++    function openChat() {
++        pet.touch();
++        pet.standUp();
++        pet.chatOpen = true;
++        bubbleHide.stop();
++        pet.waveHello();
++        if (pet.bubbleText === "") pet.say(pet.pick(["hi!", "oh! hello!", "hm? what is it?", "*waves*", "you called?"]), "happy");
++        Qt.callLater(() => chatInput.forceActiveFocus());
++    }
++
++    function closeChat() {
++        pet.chatOpen = false;
++        chatInput.text = "";
++        bubbleHide.interval = 2500;
++        bubbleHide.restart();
++    }
++
++    function openBestApp(query, minScore) {
++        const q = query.toLowerCase().trim();
++        if (q.length < 2 || typeof DesktopEntries === "undefined" || !DesktopEntries.applications) return false;
++        let best = null, bestScore = 0;
++        for (const e of DesktopEntries.applications.values) {
++            if (e.noDisplay) continue;
++            const n = (e.name || "").toLowerCase();
++            const g = (e.genericName || "").toLowerCase();
++            let sc = 0;
++            if (n === q) sc = 100;
++            else if (n.startsWith(q)) sc = 80 - Math.min(n.length - q.length, 20) / 2;
++            else if (n.split(/[\s\-_.]+/).some(w => w.startsWith(q))) sc = 60;
++            else if (n.includes(q)) sc = 40;
++            else if (g.includes(q)) sc = 20;
++            if (sc > bestScore) { bestScore = sc; best = e; }
++        }
++        if (!best || bestScore < (minScore || 1)) return false;
++        best.execute();
++        pet.say(pet.pick(["opening " + best.name + "!", "okay! " + best.name + ", coming up.", "there you go, " + best.name + "!"]), "happy");
++        return true;
++    }
++
++    function localCommand(text) {
++        const t = text.toLowerCase().replace(/[!.?,]+/g, " ").replace(/\b(please|pls|niko|can you|could you|now)\b/g, " ").replace(pet.skinName !== "" ? new RegExp("\\b" + pet.skinName.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g") : /$^/, " ").trim().replace(/\s+/g, " ");
++        const table = [
++            [/^(sit|sit down|take a seat)$/, "sit", "", ["okay! *sits down*", "sitting!"]],
++            [/^(stand|stand up|get up)$/, "stand", "", ["*stands up* okay!", "up i go!"]],
++            [/^(sleep|go to sleep|nap|take a nap|go sleep)$/, "sleep", "20", ["okay... just a little nap... *yawns*", "goodnight... wake me if you need me."]],
++            [/^(wake|wake up)$/, "wake", "", ["i'm awake! i'm awake!", "*rubs eyes* hi!"]],
++            [/^(dance|do a dance)$/, "dance", "", ["*dances* hehe!", "okay, look at this!"]],
++            [/^(jump|hop)$/, "jump", "", ["hup!", "*jumps*"]],
++            [/^(spin|do a spin|turn around)$/, "spin", "", ["wheee!", "*spins around*"]],
++            [/^(wave|wave at me|say hi)$/, "wave", "", ["hi hi!", "*waves*"]],
++            [/^(stretch)$/, "stretch", "", ["mmmh... that feels nice."]],
++            [/^(go up|go to the bar|bar|go to the top)$/, "bar", "", ["going up!"]],
++            [/^(go down|come down|floor|go to the dock|dock)$/, "floor", "", ["coming down!"]],
++            [/^(go left|walk left|left)$/, "walk", "left", ["this way?"]],
++            [/^(go right|walk right|right)$/, "walk", "right", ["over here!"]],
++            [/^(come here|come back|middle|center)$/, "walk", "center", ["coming!"]],
++            [/^(be quiet|shh+|shush|quiet|hush|stop talking)$/, "quiet", "60", ["okay... i'll be quiet for a while.", "*zips mouth*"]],
++            [/^(talk to me|you can talk|chatty|you can talk again)$/, "chatty", "", ["yay! i missed talking."]],
++            [/^(pause|pause music|pause the music|stop music|stop the music)$/, "music", "pause", ["paused!"]],
++            [/^(resume|resume music|play music|unpause)$/, "music", "play", ["playing!"]],
++            [/^(next|next song|skip|skip song|skip this)$/, "music", "next", ["next one!", "skipping!"]],
++            [/^(previous|previous song|go back|last song)$/, "music", "previous", ["going back!"]]
++        ];
++        const om = t.match(/^(?:open|launch|start|run)\s+(?:up\s+)?(?:the\s+|my\s+)?(.+?)(?:\s+app)?$/);
++        if (om && pet.openBestApp(om[1])) return true;
++        for (const [re, name, args, replies] of table) {
++            if (re.test(t)) {
++                pet.say(pet.pick(replies), name === "sleep" || name === "quiet" ? "sleepy" : "happy");
++                pet.perform([{ name: name, args: args }]);
++                return true;
++            }
++        }
++        if (t.split(" ").length <= 3 && pet.openBestApp(t, 60)) return true;
++        return false;
++    }
++
++    function send(text) {
++        text = text.trim();
++        if (text === "" || pet.thinking) return;
++        if (pet.localCommand(text)) { chatInput.text = ""; pet.touch(); idleClose.restart(); return; }
++        pet.touch();
++        chatInput.text = "";
++        pet.thinking = true;
++        pet.bubbleText = "...";
++        pet.shownChars = 3;
++        pet.baseFace = "neutral";
++        niko3d.headTilt = 10;
++        pet.ask("chat", text);
++    }
++
++
++    property int requestId: 0
++    property string requestKind: ""
++    property bool replyStarted: false
++
++    function ask(kind, text, hint) {
++        if (!brain.running) { brain.running = true; }
++        pet.requestId++;
++        pet.requestKind = kind;
++        pet.replyStarted = false;
++        let now = Date.now();
++        let said = pet.saidLog.filter(e => now - e.at < 20 * 60000).map(e => ({ text: e.text, minsAgo: Math.round((now - e.at) / 60000) }));
++        pet.saidLog = [];
++        let players = Mpris.players.values.map(pl => {
++            let id = ((pl.identity || "") + " " + (pl.dbusName || "")).toLowerCase();
++            return { name: /spotify/.test(id) ? "spotify" : (/sonora/.test(id) ? "sonora" : "other"), playing: pl.isPlaying };
++        });
++        brain.write(JSON.stringify({ id: pet.requestId, kind: kind, text: text || "", hint: hint || "", said: said, players: players, context: pet.contextLine() }) + "\n");
++        replyTimeout.restart();
++    }
++
++    function stream(text, mood) {
++        if (!pet.replyStarted) {
++            pet.replyStarted = true;
++            pet.thinking = false;
++            pet.bubbleText = "";
++            pet.shownChars = 0;
++            if (mood) pet.setMood(mood);
++        }
++        pet.bubbleText = text;
++        if (!typeTimer.running) typeTimer.start();
++    }
++
++    function onBrainLine(line) {
++        let ev;
++        try { ev = JSON.parse(line); } catch (e) { return; }
++        if (ev.id !== pet.requestId) return;
++        if (ev.type === "partial") {
++            pet.stream(ev.say, ev.mood);
++        } else if (ev.type === "done") {
++            replyTimeout.stop();
++            let kind = pet.requestKind;
++            pet.requestKind = "";
++            if (!ev.ok && kind === "notice") { pet.thinking = false; return; }
++            if (!ev.say) { pet.thinking = false; return; }
++            pet.stream(ev.say, ev.mood);
++            if (ev.mood && ev.mood !== pet.mood) pet.setMood(ev.mood);
++            if (ev.actions && ev.actions.length) Qt.callLater(() => pet.perform(ev.actions));
++            bubbleHide.interval = Math.max(6000, ev.say.length * 110);
++            if (pet.chatOpen) idleClose.restart();
++            else bubbleHide.restart();
++        }
++    }
++
++    Process {
++        id: brain
++        command: ["python3", pet.brainScript]
++        running: true
++        stdinEnabled: true
++        stdout: SplitParser { onRead: data => pet.onBrainLine(data) }
++        onExited: brainRestart.restart()
++    }
++    Timer { id: brainRestart; interval: 3000; onTriggered: brain.running = true }
++
++    Timer {
++        id: replyTimeout
++        interval: 60000
++        onTriggered: {
++            if (pet.thinking) { pet.thinking = false; pet.say("sorry... i got lost in thought. can you say that again?", "shy"); }
++            pet.requestKind = "";
++        }
++    }
++
++    Timer {
++        id: idleClose
++        interval: 30000
++        onTriggered: if (pet.chatOpen && chatInput.text === "") pet.closeChat()
++    }
++
++
++    QtObject {
++        id: env
++        property string temp: ""
++        property int ramPercent: 0
++        property real uptimeHours: 0
++        property string lastTrack: ""
++
++        function player() {
++            let list = Mpris.players.values;
++            for (let i = 0; i < list.length; i++)
++                if (list[i].isPlaying && list[i].trackTitle) return list[i];
++            return null;
++        }
++    }
++
++    FileView {
++        path: Quickshell.env("HOME") + "/.cache/serpantinum/weather/weather.json"
++        watchChanges: true
++        onFileChanged: reload()
++        onLoaded: {
++            try { env.temp = JSON.parse(typeof text === "function" ? text() : text).current_temp_formatted || ""; } catch (e) {}
++        }
++    }
++
++    FileView { id: meminfo; path: "/proc/meminfo" }
++    FileView { id: uptime; path: "/proc/uptime" }
++    Timer {
++        interval: 60000
++        running: true
++        repeat: true
++        triggeredOnStart: true
++        onTriggered: {
++            meminfo.reload(); uptime.reload();
++            let m = (typeof meminfo.text === "function" ? meminfo.text() : meminfo.text) || "";
++            let total = Number((m.match(/MemTotal:\s+(\d+)/) || [0, 0])[1]);
++            let avail = Number((m.match(/MemAvailable:\s+(\d+)/) || [0, 0])[1]);
++            if (total > 0) env.ramPercent = Math.round(100 * (total - avail) / total);
++            let u = (typeof uptime.text === "function" ? uptime.text() : uptime.text) || "0";
++            env.uptimeHours = parseFloat(u) / 3600;
++            if (env.ramPercent >= 90)
++                pet.react("ram", 1800000, "your computer is breathing really hard... maybe close something?", "worried");
++        }
++    }
++
++    Timer {
++        interval: 5000
++        running: true
++        repeat: true
++        onTriggered: {
++            let p = env.player();
++            let t = p ? p.trackTitle : "";
++            musicCheck.playing = p !== null;
++            if (t !== "" && t !== env.lastTrack && env.lastTrack !== "") pet.onNewSong(p);
++            env.lastTrack = t;
++        }
++    }
++    QtObject { id: musicCheck; property bool playing: false }
++
++    function onNewSong(p) {
++        if (pet.quiet || pet.chatOpen || pet.thinking || pet.sleeping || pet.requestKind !== "") return;
++        let title = p.trackTitle, artist = p.trackArtist || "";
++        let now = Date.now();
++        if (pet.config.proactive && now - (pet.lastReaction["song-ai"] || 0) > 2700000 && Math.random() < 0.25) {
++            pet.lastReaction["song-ai"] = now;
++            pet.lastReaction["song"] = now;
++            pet.ask("notice", "", "a new song just started: '" + title + "'" + (artist ? " by " + artist : "") + ". say something about it (if you know it, share a tiny thought).");
++            return;
++        }
++        if (Math.random() < 0.7)
++            pet.react("song", 180000, pet.pick([
++                "ooh, '" + title + "'! i like this one.",
++                artist ? "is this " + artist + "? *hums along*" : "*hums along*",
++                "'" + title + "'... what a pretty name for a song.",
++                "new song! *sways*",
++                artist ? "you listen to " + artist + " a lot... i'm starting to like them too!" : "this one is nice..."]), "happy");
++    }
++
++    FileView {
++        path: Quickshell.env("HOME") + "/.cache/serpantinum/wallpaper/current_wallpaper.png"
++        watchChanges: true
++        preload: false
++        onFileChanged: pet.react("wallpaper", 45000, pet.pick(["woah... a whole new world!", "ooh, i like this one!", "so pretty...!", "where are we now?"]), "excited")
++    }
++
++
++    property var config: ({ autoTalk: true, autoTalkMinutes: [4, 9], proactive: true, proactiveMinutes: [20, 40], followCursor: true, shareWindowTitles: false, shareVideoTitles: true })
++    FileView {
++        path: pet.configFile
++        watchChanges: true
++        onFileChanged: reload()
++        onLoaded: {
++            try {
++                let c = JSON.parse(typeof text === "function" ? text() : text);
++                pet.config = {
++                    autoTalk: c.autoTalk !== false,
++                    autoTalkMinutes: Array.isArray(c.autoTalkMinutes) ? c.autoTalkMinutes : [4, 9],
++                    proactive: c.proactive !== false,
++                    proactiveMinutes: Array.isArray(c.proactiveMinutes) ? c.proactiveMinutes : [20, 40],
++                    followCursor: c.followCursor !== false,
++                    shareWindowTitles: c.shareWindowTitles === true,
++                    shareVideoTitles: c.shareVideoTitles !== false,
++                    waterMinutes: typeof c.waterMinutes === "number" ? c.waterMinutes : 90
++                };
++            } catch (e) {}
++        }
++    }
++
++    function selfTalkLine() {
++        let h = new Date().getHours();
++        let pool = [
++            "i wonder what mama is doing right now...",
++            "this computer is so warm. i like it here.",
++            "hazel's pancakes would be perfect right now...",
++            "do you think the sun gets lonely?",
++            "i'm holding the lightbulb very carefully, don't worry!",
++            "everything in here is so shiny...",
++            "you're working really hard. don't forget to take breaks!",
++            "i saw a little bug on the screen... oh, it was just a pixel.",
++            "if i sit very still, maybe i'll see how the computer thinks.",
++            "*hums quietly*"
++        ];
++        if (h >= 5 && h < 11) pool.push("good morning! did you sleep well?", "the sun is up... mornings are the best.");
++        else if (h >= 11 && h < 17) pool.push("did you eat lunch? ...i keep thinking about pancakes.", "it's the middle of the day already!");
++        else if (h >= 17 && h < 22) pool.push("the sky gets so pretty in the evening.", "are you almost done for today?");
++        else pool.push("it's really late... are you sleepy too?", "my lightbulb is still on, so i'll stay up with you.", "the night is so quiet...");
++        let p = env.player();
++        if (p) pool.push("i like this music...", "is this '" + p.trackTitle + "'? it's nice.");
++        if (env.temp !== "") pool.push("it's " + env.temp + " outside... is that cold?");
++        if (env.uptimeHours > 3) pool.push("you've been here a long time... maybe drink some water?");
++        return pet.pick(pool);
++    }
++
++    Timer {
++        id: selfTalk
++        running: pet.visible && pet.config.autoTalk
++        repeat: true
++        interval: 600000
++        function reschedule() {
++            let r = pet.config.autoTalkMinutes;
++            interval = Math.round((r[0] + Math.random() * Math.max(0, r[1] - r[0])) * 60000);
++        }
++        Component.onCompleted: reschedule()
++        onTriggered: {
++            reschedule();
++            if (Date.now() - pet.lastInteraction < 60000) return;
++            let line = pet.selfTalkLine();
++            let mood = (line.indexOf("mama") !== -1 || line.indexOf("lonely") !== -1) ? "sad"
++                     : ((line.indexOf("late") !== -1 || line.indexOf("sleepy") !== -1) ? "sleepy" : "happy");
++            pet.react("selftalk", 60000, line, mood);
++        }
++    }
++
++
++    QtObject {
++        id: apps
++        property string current: ""
++        property string title: ""
++        property double since: Date.now()
++        property string longNudged: ""
++        property string site: ""
++        property string video: ""
++        property string address: ""
++        property double videoSince: 0
++        property double lastVideoTalk: 0
++
++        function category(cls) {
++            const c = cls.toLowerCase();
++            if (/steam_app|gamescope|sober|roblox|minecraft|lutris|heroic|\.exe$/.test(c)) return "game";
++            if (/code|codium|nvim|neovim|jetbrains|idea|pycharm|zed|kitty|alacritty|foot|wezterm|ghostty|konsole|terminal/.test(c)) return "code";
++            if (/zen|firefox|chrom|brave|vivaldi|librewolf|browser/.test(c)) return "web";
++            if (/vesktop|discord|telegram|signal|whatsapp|element|slack/.test(c)) return "chat";
++            if (/spotify|sonora|tidal|music|rhythmbox/.test(c)) return "music";
++            if (/krita|gimp|inkscape|blender|aseprite|kdenlive|obs/.test(c)) return "art";
++            if (/dolphin|nautilus|thunar|nemo|files/.test(c)) return "files";
++            return "";
++        }
++    }
++
++    function siteOf(title) {
++        const t = (title || "").toLowerCase();
++        const sites = [["tiktok", "TikTok"], ["youtube", "YouTube"], ["reddit", "Reddit"], ["twitch", "Twitch"], ["netflix", "Netflix"],
++                       ["instagram", "Instagram"], [" / x", "X"], ["twitter", "Twitter"], ["github", "GitHub"], ["wikipedia", "Wikipedia"],
++                       ["chatgpt", "ChatGPT"], ["claude", "Claude"], ["gmail", "Gmail"], ["google docs", "Google Docs"], ["pinterest", "Pinterest"],
++                       ["steam", "Steam"], ["discord", "Discord"], ["spotify", "Spotify"], ["amazon", "Amazon"], ["anime", "an anime site"]];
++        for (const [k, name] of sites) if (t.indexOf(k) !== -1) return name;
++        return "";
++    }
++
++    readonly property var videoSites: ["YouTube", "TikTok", "Twitch", "Netflix", "an anime site", "Instagram"]
++
++    function videoTitle(title, site) {
++        let t = (title || "").replace(/^\(\d+\)\s*/, "");
++        t = t.replace(/\s+[—–-]\s+(zen( browser)?|mozilla firefox|firefox|google chrome|chromium|brave|vivaldi|librewolf)\s*$/i, "");
++        t = t.replace(/\s*[|—–-]\s*(youtube|tiktok|twitch|netflix|instagram)\s*$/i, "");
++        t = t.trim();
++        if (/^(youtube|tiktok|twitch|netflix|instagram|home|for you|following|explore|watch|tiktok - make your day)$/i.test(t) || t.length < 3) return "";
++        return t.substring(0, 120);
++    }
++
++    function onVideo(site, title) {
++        let now = Date.now();
++        apps.video = title;
++        apps.videoSince = now;
++        if (pet.quiet || pet.chatOpen || pet.thinking || pet.sleeping || pet.requestKind !== "") return;
++        if (now - apps.lastVideoTalk < 120000) return;
++        if (pet.config.proactive && pet.config.shareVideoTitles && now - (pet.lastReaction["video-ai"] || 0) > 900000 && Math.random() < 0.35) {
++            pet.lastReaction["video-ai"] = now;
++            apps.lastVideoTalk = now;
++            pet.ask("notice", "", "they're watching a " + site + " video called '" + title + "'. react to it like you're watching it together with them");
++            return;
++        }
++        if (Math.random() < 0.75 && pet.react("video", 120000, pet.pick([
++                "'" + title + "'... ooh, what's this one about?",
++                "hehe, this one looks fun!",
++                "ooh, '" + title + "'? i want to see too!",
++                "*leans closer to the screen*",
++                "this one sounds interesting...",
++                "wait, what's happening in this one?"]), "curious"))
++            apps.lastVideoTalk = now;
++    }
++
++    Timer {
++        interval: 75000
++        repeat: true
++        running: pet.visible
++        onTriggered: {
++            if (pet.videoSites.indexOf(apps.site) === -1 || pet.quiet || pet.chatOpen || pet.thinking || pet.sleeping || pet.requestKind !== "") return;
++            let now = Date.now();
++            if (now - apps.lastVideoTalk < 240000 || Math.random() > 0.6) return;
++            let mins = Math.round((now - apps.since) / 60000);
++            if (pet.config.proactive && now - (pet.lastReaction["video-ai"] || 0) > 1500000 && Math.random() < 0.3) {
++                pet.lastReaction["video-ai"] = now;
++                apps.lastVideoTalk = now;
++                pet.ask("notice", "", "they've been on " + apps.site + " for " + mins + " minutes" + (apps.video && pet.config.shareVideoTitles ? ", now watching '" + apps.video + "'" : "") + ". say something like a friend watching along");
++                return;
++            }
++            const lines = {
++                "TikTok": ["hehe, that one was funny!", "*giggles*", "how do they dance like that?", "one more? okay... one more.", "wait, go back! i didn't see it!", "these videos are so short... my eyes can't keep up!"],
++                "YouTube": ["this is a good one...", "*watches quietly*", "ooh, what happens next?", "i like watching videos with you."],
++                "Twitch": ["they're so good at this!", "the chat moves so fast..."],
++                "Netflix": ["*watches very quietly*", "ooh... what's going to happen?"]
++            };
++            if (pet.react("video", 120000, pet.pick(lines[apps.site] || ["what are we watching?", "*watches with you*"]), "happy"))
++                apps.lastVideoTalk = now;
++        }
++    }
++
++    function onActiveTitle(title) {
++        apps.title = title;
++        if (apps.category(apps.current) !== "web") return;
++        let site = pet.siteOf(title);
++        if (site !== apps.site) {
++            apps.site = site;
++            apps.video = "";
++            if (site !== "" && Date.now() - (pet.lastReaction["app"] || 0) > 90000 && pet.requestKind === "") pet.onSiteChanged(site);
++        }
++        if (pet.videoSites.indexOf(site) !== -1) {
++            let v = pet.videoTitle(title, site);
++            if (v !== "" && v !== apps.video) pet.onVideo(site, v);
++        }
++    }
++
++    function onSiteChanged(site) {
++        const lines = {
++            "TikTok": ["tiktok! show me the funny ones too!", "ooh, tiktok... just one more video, right? hehe.", "the videos go by so fast..."],
++            "YouTube": ["what are we watching?", "youtube! is it a funny video?", "ooh, a video! can i watch too?"],
++            "Reddit": ["so many people talking at once...", "reddit! find anything interesting?"],
++            "Twitch": ["is someone streaming? who is it?", "ooh, a live stream!"],
++            "Netflix": ["movie time? i'll be very quiet...", "ooh, what are we watching?"],
++            "GitHub": ["computer magic stuff again!", "github... is that where programs live?"],
++            "Wikipedia": ["learning something? tell me too!", "wikipedia knows everything..."],
++            "Steam": ["looking for a new game?", "ooh, steam! are we buying a game?"]
++        };
++        let pool = lines[site] || ["ooh, " + site + "!", "what are we doing on " + site + "?"];
++        pet.lastReaction["app"] = Date.now();
++        if (pet.config.proactive && Math.random() < 0.25 && Date.now() - (pet.lastReaction["app-ai"] || 0) > 2400000) {
++            pet.lastReaction["app-ai"] = Date.now();
++            pet.ask("notice", "", "they just opened " + site + " in the browser");
++        } else {
++            pet.react("app-site-" + site, 480000, pet.pick(pool), "curious");
++        }
++    }
++
++    function onAppChanged(cls) {
++        let cat = apps.category(cls);
++        if (cat === "" || Math.random() > 0.8) return;
++        if (cat !== "web" && pet.config.proactive && Math.random() < 0.2 && Date.now() - (pet.lastReaction["app-ai"] || 0) > 2400000) {
++            pet.lastReaction["app-ai"] = Date.now();
++            pet.lastReaction["app"] = Date.now();
++            pet.ask("notice", "", "they just switched to the app " + cls);
++            return;
++        }
++        const lines = {
++            game: ["are we playing a game? i'll cheer for you!", "good luck! i'll watch very quietly...", "ooh, a game! is it a fun one?"],
++            code: ["you're doing computer magic again...", "so many letters... are you building something?", "i'll be quiet so you can think."],
++            web: ["what are we looking at?", "the internet is so big... don't get lost!", "ooh, are you looking something up?"],
++            chat: ["talking to your friends? say hi from me!", "who are you talking to?"],
++            music: ["picking music? i like the soft ones...", "ooh, what are we listening to next?"],
++            art: ["are you making something? can i see?", "i like watching people make things..."],
++            files: ["tidying up? i can help hold things!", "so many folders..."]
++        };
++        if (pet.react("app-" + cat, 480000, pet.pick(lines[cat]), cat === "game" ? "excited" : "curious"))
++            pet.lastReaction["app"] = Date.now();
++    }
++
++    Process {
++        running: true
++        command: ["hyprctl", "activewindow", "-j"]
++        stdout: StdioCollector {
++            onStreamFinished: {
++                try {
++                    let w = JSON.parse(this.text);
++                    apps.current = w.class || "";
++                    apps.title = w.title || "";
++                    apps.address = (w.address || "").replace(/^0x/, "");
++                    apps.site = apps.category(apps.current) === "web" ? pet.siteOf(apps.title) : "";
++                    apps.video = pet.videoSites.indexOf(apps.site) !== -1 ? pet.videoTitle(apps.title, apps.site) : "";
++                } catch (e) {}
++            }
++        }
++    }
++
++    Connections {
++        target: Hyprland
++        function onRawEvent(event) {
++            if (event.name === "activewindowv2") { apps.address = (event.data || "").replace(/^0x/, ""); return; }
++            if (event.name === "windowtitlev2") {
++                let d = event.data || "", c = d.indexOf(",");
++                if (c !== -1 && d.substring(0, c).replace(/^0x/, "") === apps.address) pet.onActiveTitle(d.substring(c + 1));
++                return;
++            }
++            if (event.name !== "activewindow") return;
++            let d = event.data || "";
++            let comma = d.indexOf(",");
++            let cls = comma === -1 ? d : d.substring(0, comma);
++            let title = comma === -1 ? "" : d.substring(comma + 1);
++            let site = apps.category(cls) === "web" ? pet.siteOf(title) : "";
++            let freeToReact = Date.now() - (pet.lastReaction["app"] || 0) > 90000 && pet.requestKind === "";
++            if (cls === "" || cls === apps.current) {
++                apps.title = title;
++                if (site !== "" && site !== apps.site) { apps.site = site; if (freeToReact) pet.onSiteChanged(site); }
++                return;
++            }
++            apps.current = cls;
++            apps.title = title;
++            apps.since = Date.now();
++            apps.longNudged = "";
++            apps.site = site;
++            apps.video = pet.videoSites.indexOf(site) !== -1 ? pet.videoTitle(title, site) : "";
++            if (!freeToReact) return;
++            if (site !== "") pet.onSiteChanged(site);
++            else pet.onAppChanged(cls);
++        }
++    }
++
++    Timer {
++        interval: 120000
++        running: true
++        repeat: true
++        onTriggered: {
++            if (apps.current === "" || apps.longNudged === apps.current) return;
++            if (Date.now() - apps.since > 90 * 60000 && pet.react("break", 3600000, pet.pick([
++                    "you've been here a really long time... maybe stretch a little?",
++                    "let's take a tiny break! drink some water?",
++                    "my legs are sleepy from sitting... yours too? let's stretch!"]), "worried"))
++                apps.longNudged = apps.current;
++        }
++    }
++
++    QtObject {
++        id: follow
++        property bool active: false
++        property real head: 0
++        property real body: 0
++        property real lastX: -1
++        property real lastY: -1
++        property double movedAt: 0
++        property double nearSince: 0
++    }
++
++    Socket {
++        id: hyprSocket
++        path: Quickshell.env("XDG_RUNTIME_DIR") + "/hypr/" + Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") + "/.socket.sock"
++        property string buf: ""
++        onConnectedChanged: if (connected) { buf = ""; write("j/cursorpos"); flush(); }
++        parser: SplitParser {
++            splitMarker: "}"
++            onRead: data => pet.onCursor(data)
++        }
++    }
++
++    Timer {
++        interval: 250
++        repeat: true
++        running: pet.visible && pet.config.followCursor && !pet.sleeping && pet.place !== "held" && Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") !== ""
++        onRunningChanged: if (!running) follow.active = false
++        onTriggered: { hyprSocket.connected = false; hyprSocket.connected = true; }
++    }
++
++    function onCursor(data) {
++        let mx = data.match(/"x"\s*:\s*(-?[\d.]+)/), my = data.match(/"y"\s*:\s*(-?[\d.]+)/);
++        hyprSocket.connected = false;
++        if (!mx || !my) return;
++        let cx = Number(mx[1]) - (nikoScreenOffset.x), cy = Number(my[1]) - (nikoScreenOffset.y);
++        let now = Date.now();
++        if (Math.abs(cx - follow.lastX) + Math.abs(cy - follow.lastY) > 3) follow.movedAt = now;
++        follow.lastX = cx; follow.lastY = cy;
++
++        let px = pet.x + pet.width / 2, py = pet.y + pet.height * 0.25;
++        let dx = cx - px, dy = cy - py, dist = Math.sqrt(dx * dx + dy * dy);
++        let watching = dist < 900 && now - follow.movedAt < 6000 && !pet.chatOpen;
++        if (watching) {
++            let head = Math.max(-35, Math.min(35, dx / 16));
++            if (!follow.active || Math.abs(head - follow.head) > 4) {
++                follow.head = head;
++                follow.body = Math.max(-25, Math.min(25, head * 0.5));
++            }
++        }
++        follow.active = watching;
++
++        if (dist < 130 && !hover.hovered) {
++            if (follow.nearSince === 0) follow.nearSince = now;
++            else if (now - follow.nearSince > 2500) {
++                follow.nearSince = now + 600000;
++                pet.react("near", 600000, pet.pick(["hi there!", "are you looking at me?", "hehe... your arrow is so close.", "*pokes the cursor*"]), "shy");
++            }
++        } else if (dist >= 130) follow.nearSince = 0;
++    }
++
++    QtObject {
++        id: nikoScreenOffset
++        property real x: Quickshell.screens.length > 0 ? Quickshell.screens[0].x : 0
++        property real y: Quickshell.screens.length > 0 ? Quickshell.screens[0].y : 0
++    }
++
++    Timer {
++        id: proactiveTimer
++        running: pet.visible && pet.config.proactive
++        repeat: true
++        interval: 900000
++        function reschedule() {
++            let r = pet.config.proactiveMinutes;
++            interval = Math.round((r[0] + Math.random() * Math.max(0, r[1] - r[0])) * 60000);
++        }
++        Component.onCompleted: reschedule()
++        onTriggered: {
++            reschedule();
++            if (pet.quiet || pet.sleeping || pet.chatOpen || pet.thinking || pet.place === "held" || pet.bubbleText !== "" || pet.requestKind !== "") return;
++            if (Date.now() - pet.lastInteraction < 180000) return;
++            pet.ask("notice", "");
++        }
++    }
++
++    property bool greeted: false
++    Timer {
++        interval: 4000
++        running: pet.visible && !pet.greeted
++        onTriggered: {
++            pet.greeted = true;
++            let h = new Date().getHours();
++            let line = h >= 5 && h < 12 ? pet.pick(["good morning! i'm here.", "morning! did you sleep well?"])
++                     : h >= 12 && h < 18 ? pet.pick(["hi! i'm here!", "hello again!"])
++                     : h >= 18 && h < 23 ? pet.pick(["good evening!", "hi! it's evening already..."])
++                     : pet.pick(["it's so late... hi.", "hello... shh, it's nighttime."]);
++            pet.say(line, "happy");
++            pet.waveHello();
++        }
++    }
++
++
++    function player() {
++        let list = Mpris.players.values, best = null;
++        for (let i = 0; i < list.length; i++) {
++            let pl = list[i];
++            if (pl.isPlaying) return pl;
++            let id = ((pl.identity || "") + " " + (pl.dbusName || "")).toLowerCase();
++            if (!best || /sonora|spotify/.test(id)) best = pl;
++        }
++        return best;
++    }
++
++    function openLink(uri) {
++        playProc.command = ["bash", Caching.serpantinumDir + "/scripts/niko/niko_play.sh", uri];
++        playProc.running = true;
++    }
++
++    Process {
++        id: playProc
++        onExited: (code) => {
++            if (code === 4) pet.say("i opened it in sonora, but i can't press play there... (restarting sonora after its update lets me do it myself!)", "shy", 7000);
++            else if (code === 3) pet.say("hmm... it wouldn't play that one. maybe it's not on your account?", "worried");
++            else if (code === 5) pet.say("i don't have anything to play that with... is spotify installed?", "worried");
++        }
++    }
++
++    function perform(actions) {
++        for (const a of actions) {
++            const name = a.name, args = (a.args || "").trim();
++            if (name === "sit") { if (pet.place === "floor") pet.sitDown(); }
++            else if (name === "stand") pet.standUp();
++            else if (name === "sleep") {
++                let mins = Math.max(1, Math.min(240, parseInt(args) || 20));
++                if (pet.chatOpen) pet.closeChat();
++                if (pet.place === "floor") pet.sitDown();
++                pet.napping = true;
++                napTimer.interval = mins * 60000;
++                napTimer.restart();
++            }
++            else if (name === "wake") { pet.napping = false; napTimer.stop(); }
++            else if (name === "wave") pet.waveHello();
++            else if (name === "jump") { pet.standUp(); hop.loops = 2; hop.restart(); }
++            else if (name === "dance") { pet.standUp(); danceAnim.restart(); }
++            else if (name === "spin") spinAnim.restart();
++            else if (name === "stretch") stretchAnim.restart();
++            else if (name === "yawn") yawnAnim.restart();
++            else if (name === "bar" && info.barAvailable) { pet.standUp(); pet.place = "bar"; pet.savePlace(); }
++            else if (name === "floor" && pet.place === "bar") {
++                pet.place = "floor";
++                pet.falling = true;
++                fallAnim.from = info.barBottom;
++                fallAnim.to = pet.floorAt(pet.footX);
++                fallAnim.duration = 650;
++                fallAnim.restart();
++                pet.savePlace();
++            }
++            else if (name === "walk") pet.walkTo(args);
++            else if (name === "quiet") pet.quietUntil = Date.now() + Math.max(1, Math.min(600, parseInt(args) || 60)) * 60000;
++            else if (name === "chatty") pet.quietUntil = 0;
++            else if (name === "timer") {
++                let m = args.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
++                if (m) pet.addReminder(Date.now() + parseFloat(m[1]) * 60000, m[2] || "time's up!");
++            }
++            else if (name === "remind") {
++                let m = args.match(/^(\d{1,2})[:.](\d{2})\s*(.*)$/);
++                if (m) {
++                    let at = new Date();
++                    at.setHours(parseInt(m[1]), parseInt(m[2]), 0, 0);
++                    if (at.getTime() <= Date.now()) at.setDate(at.getDate() + 1);
++                    pet.addReminder(at.getTime(), m[3] || "you asked me to remind you!");
++                }
++            }
++            else if (name === "music") {
++                let pl = pet.player();
++                if (!pl) continue;
++                if (args === "pause") pl.pause();
++                else if (args === "play") pl.play();
++                else if (args === "next") pl.next();
++                else if (args === "previous") pl.previous();
++            }
++            else if (name === "play_uri" && /^(spotify:(track|playlist|album):[A-Za-z0-9]+|https:\/\/music\.apple\.com\/)/.test(args)) pet.openLink(args);
++            else if (name === "launch_game" && /^\d+$/.test(args)) Quickshell.execDetached(["xdg-open", "steam://rungameid/" + args]);
++            else if (name === "steam_page" && /^\d+$/.test(args)) Quickshell.execDetached(["xdg-open", "https://store.steampowered.com/app/" + args]);
++            else if (name === "open_app") {
++                let entry = DesktopEntries.heuristicLookup(args);
++                if (entry) entry.execute();
++                else pet.say("hmm... i couldn't find " + args + ".", "worried");
++            }
++        }
++    }
++
++    Timer {
++        id: napTimer
++        onTriggered: { pet.napping = false; pet.say(pet.pick(["*yawns* that was a nice nap!", "i'm awake! did i miss anything?"]), "happy"); }
++    }
++
++    function walkTo(where) {
++        let margin = pet.width;
++        let target = where === "left" ? Math.max(margin, pet.footX - pet.screenW * 0.3)
++                   : where === "right" ? Math.min(pet.screenW - margin, pet.footX + pet.screenW * 0.3)
++                   : pet.screenW / 2;
++        if (pet.place === "held" || Math.abs(target - pet.footX) < 4) return;
++        pet.standUp();
++        walk.dir = target > pet.footX ? 1 : -1;
++        walkAnim.to = target;
++        walkAnim.duration = Math.min(6000, Math.abs(target - pet.footX) * 6);
++        walkAnim.restart();
++    }
++    QtObject { id: walk; property int dir: 0 }
++    NumberAnimation {
++        id: walkAnim
++        target: pet
++        property: "footX"
++        easing.type: Easing.InOutSine
++        onRunningChanged: if (!running) { walk.dir = 0; pet.savePlace(); }
++    }
++    SequentialAnimation {
++        running: walkAnim.running
++        loops: Animation.Infinite
++        NumberAnimation { target: modelHolder; property: "hopY"; to: 5; duration: 140; easing.type: Easing.OutQuad }
++        NumberAnimation { target: modelHolder; property: "hopY"; to: 0; duration: 140; easing.type: Easing.InQuad }
++    }
++
++    SequentialAnimation {
++        id: danceAnim
++        PropertyAction { target: pet; property: "baseFace"; value: "happy" }
++        SequentialAnimation {
++            loops: 3
++            ParallelAnimation {
++                NumberAnimation { target: glance; property: "body"; to: 35; duration: 300; easing.type: Easing.InOutSine }
++                NumberAnimation { target: niko3d; property: "headTilt"; to: 12; duration: 300 }
++                SequentialAnimation {
++                    NumberAnimation { target: modelHolder; property: "hopY"; to: 10; duration: 150 }
++                    NumberAnimation { target: modelHolder; property: "hopY"; to: 0; duration: 150 }
++                }
++            }
++            ParallelAnimation {
++                NumberAnimation { target: glance; property: "body"; to: -35; duration: 300; easing.type: Easing.InOutSine }
++                NumberAnimation { target: niko3d; property: "headTilt"; to: -12; duration: 300 }
++                NumberAnimation { target: niko3d; property: "wave"; to: 1; duration: 300 }
++            }
++            NumberAnimation { target: niko3d; property: "wave"; to: 0; duration: 200 }
++        }
++        ParallelAnimation {
++            NumberAnimation { target: glance; property: "body"; to: 0; duration: 300 }
++            NumberAnimation { target: niko3d; property: "headTilt"; to: 0; duration: 300 }
++        }
++        PropertyAction { target: pet; property: "baseFace"; value: "smile" }
++    }
++
++    property real spinAngle: 0
++    property bool turnSmoothing: true
++    NumberAnimation {
++        id: spinAnim
++        target: pet; property: "spinAngle"; from: 0; to: 360; duration: 900; easing.type: Easing.InOutCubic
++        onRunningChanged: {
++            pet.turnSmoothing = !running;
++            if (!running) { pet.turnSmoothing = false; pet.spinAngle = 0; Qt.callLater(() => pet.turnSmoothing = true); }
++        }
++    }
++
++    property var reminders: []
++    readonly property string remindersFile: Caching.getStateDir("niko") + "/reminders.json"
++    function addReminder(at, text) {
++        pet.reminders = pet.reminders.concat([{ at: at, text: text }]);
++        Quickshell.execDetached(["sh", "-c", "mkdir -p \"$(dirname \"$2\")\" && printf '%s' \"$1\" > \"$2\"", "_", JSON.stringify(pet.reminders), pet.remindersFile]);
++    }
++    FileView {
++        path: pet.remindersFile
++        onLoaded: { try { pet.reminders = JSON.parse(typeof text === "function" ? text() : text) || []; } catch (e) {} }
++    }
++    Timer {
++        interval: 15000
++        running: pet.reminders.length > 0
++        repeat: true
++        onTriggered: {
++            let now = Date.now();
++            let due = pet.reminders.filter(r => r.at <= now);
++            if (due.length === 0) return;
++            pet.reminders = pet.reminders.filter(r => r.at > now);
++            Quickshell.execDetached(["sh", "-c", "printf '%s' \"$1\" > \"$2\"", "_", JSON.stringify(pet.reminders), pet.remindersFile]);
++            pet.napping = false;
++            let text = due.map(r => r.text).join(" / ");
++            pet.say("hey! " + text, "excited", 20000);
++            Quickshell.execDetached(["notify-send", "-a", pet.displayName, pet.displayName, text]);
++        }
++    }
++
++    property int lastLevel: 0
++    FileView {
++        path: Quickshell.env("XDG_RUNTIME_DIR") + "/serpantinum/niko/presence.json"
++        watchChanges: true
++        onFileChanged: reload()
++        onLoaded: {
++            let d;
++            try { d = JSON.parse(typeof text === "function" ? text() : text); } catch (e) { return; }
++            let m = ((d.details || "") + " " + (d.state || "")).match(/\b(?:level|lvl|lv|stage|floor|wave|round)\.?\s*[:#]?\s*(\d+)/i);
++            if (!m) { if (!d.details && !d.state) pet.lastLevel = 0; return; }
++            let lvl = parseInt(m[1]);
++            let prev = pet.lastLevel;
++            pet.lastLevel = lvl;
++            if (prev >= 2 && lvl < prev && !pet.quiet && !pet.sleeping && !pet.chatOpen) {
++                pet.napping = false;
++                info.cheering = true;
++                cheerHold.restart();
++                let c = pet.pick(["oh no... you died. it's okay, you got to level " + prev + "! let's try again!", "aww, that was a tough one. you did really well, i'm proud of you!", "it's okay... everyone dies in nullscape. one more try?"]);
++                pet.say(c, "sad", 9000);
++                return;
++            }
++            if (prev > 0 && lvl > prev && lvl - prev <= 3 && !pet.quiet && !pet.sleeping && !pet.chatOpen) {
++                pet.napping = false;
++                info.cheering = true;
++                cheerHold.restart();
++                pet.say(pet.pick(["you reached level " + lvl + "! amazing!", "level " + lvl + "! i knew you could do it!", "wow, level " + lvl + "! you're so good!"]), "happy", 9000);
++                pet.perform([{ name: pet.pick(["jump", "dance", "wave"]), args: "" }]);
++            }
++        }
++    }
++
++    Timer { id: cheerHold; interval: 9000; onTriggered: info.cheering = false }
++
++    Timer {
++        interval: Math.max(1, pet.config.waterMinutes !== undefined ? pet.config.waterMinutes : 90) * 60000
++        running: (pet.config.waterMinutes !== undefined ? pet.config.waterMinutes : 90) > 0
++        repeat: true
++        onTriggered: {
++            if (idleMonitor.isIdle) return;
++            pet.napping = false;
++            let text = pet.pick(["time for a glass of water!", "drink some water, okay? 💧", "hydration check! go grab some water."]);
++            pet.say("hey! " + text, "happy", 15000);
++            Quickshell.execDetached(["notify-send", "-a", pet.displayName, pet.displayName, text]);
++        }
++    }
++
++
++    IdleMonitor {
++        id: idleMonitor
++        timeout: 300
++        respectInhibitors: true
++        onIsIdleChanged: {
++            if (isIdle) {
++                pet.sleptAt = Date.now();
++                if (pet.chatOpen) pet.closeChat();
++                pet.bubbleText = "";
++                if (pet.place === "floor") pet.sitDown();
++            } else {
++                pet.setMoodQuiet();
++                let away = (Date.now() - pet.sleptAt) / 60000;
++                if (away > 30) pet.say(pet.pick(["you're back! i kept the light on for you.", "*rubs eyes* oh! welcome back!", "i missed you!"]), "happy");
++            }
++        }
++    }
++
++    function sitDown() {
++        if (pet.place !== "floor") return;
++        pet.sitTarget = 1;
++        sitting.interval = 60000 + Math.random() * 120000;
++        sitting.restart();
++    }
++
++    function standUp() {
++        sitting.stop();
++        pet.sitTarget = 0;
++    }
++
++    Timer {
++        id: sitting
++        onTriggered: {
++            if (pet.sleeping || pet.place !== "floor") { restart(); return; }
++            pet.sitTarget = 0;
++            stretchAnim.restart();
++        }
++    }
++
++    Timer {
++        running: pet.visible && !pet.sleeping && !pet.chatOpen && !pet.thinking && pet.place !== "held" && !pet.falling
++        interval: 7000
++        repeat: true
++        onTriggered: {
++            interval = 5000 + Math.random() * 9000;
++            let idleFor = (Date.now() - pet.lastInteraction) / 1000;
++            let seated = niko3d.sit > 0.5;
++            let actions = ["look", "look", "tilt", "blink2", "bulb"];
++            if (!seated) actions.push("turn", "turn", "hop");
++            if (seated) actions.push("swing", "swing");
++            if (pet.place === "floor" && !seated && idleFor > 90) actions.push("sit", "sit");
++            let h = new Date().getHours();
++            if (h >= 23 || h < 6 || Math.random() < 0.15) actions.push("yawn");
++            if (Math.random() < 0.08 && !seated) actions.push("stretch");
++            let a = pet.pick(actions);
++            if (a === "look") { glance.head = Math.random() * 44 - 22; glanceBack.restart(); }
++            else if (a === "turn") glance.body = Math.random() < 0.3 ? 0 : (Math.random() * 60 - 30);
++            else if (a === "tilt") { niko3d.headTilt = Math.random() < 0.5 ? 12 : -12; glanceBack.restart(); }
++            else if (a === "blink2") doubleBlink.restart();
++            else if (a === "bulb") admireAnim.restart();
++            else if (a === "hop") { hop.loops = 1; hop.restart(); }
++            else if (a === "swing") legSwing.restart();
++            else if (a === "sit") pet.sitDown();
++            else if (a === "yawn") yawnAnim.restart();
++            else if (a === "stretch") stretchAnim.restart();
++        }
++    }
++
++    QtObject {
++        id: glance
++        property real head: 0
++        property real body: 0
++    }
++    Timer {
++        id: glanceBack
++        interval: 2200
++        onTriggered: { glance.head = 0; if (pet.mood === "neutral") niko3d.headTilt = 0; }
++    }
++
++    SequentialAnimation {
++        id: doubleBlink
++        NumberAnimation { target: niko3d; property: "blink"; to: 1; duration: 60 }
++        NumberAnimation { target: niko3d; property: "blink"; to: 0; duration: 90 }
++        PauseAnimation { duration: 120 }
++        NumberAnimation { target: niko3d; property: "blink"; to: 1; duration: 60 }
++        NumberAnimation { target: niko3d; property: "blink"; to: 0; duration: 90 }
++    }
++
++    SequentialAnimation {
++        id: admireAnim
++        PropertyAction { target: pet; property: "baseFace"; value: "smile" }
++        ParallelAnimation {
++            NumberAnimation { target: niko3d; property: "sleepy"; to: 0.7; duration: 500; easing.type: Easing.InOutSine }
++            NumberAnimation { target: niko3d; property: "bulbGlow"; to: 1.5; duration: 500 }
++        }
++        PauseAnimation { duration: 1400 }
++        ParallelAnimation {
++            NumberAnimation { target: niko3d; property: "sleepy"; to: 0; duration: 500; easing.type: Easing.InOutSine }
++            NumberAnimation { target: niko3d; property: "bulbGlow"; to: 1.0; duration: 500 }
++        }
++        ScriptAction { script: if (pet.mood === "neutral") pet.baseFace = "neutral" }
++    }
++
++    SequentialAnimation {
++        id: yawnAnim
++        PropertyAction { target: pet; property: "baseFace"; value: "laugh" }
++        NumberAnimation { target: niko3d; property: "sleepy"; to: -0.8; duration: 450; easing.type: Easing.OutSine }
++        PauseAnimation { duration: 900 }
++        NumberAnimation { target: niko3d; property: "sleepy"; to: 0; duration: 500; easing.type: Easing.InOutSine }
++        PropertyAction { target: pet; property: "baseFace"; value: "sleepy" }
++        PauseAnimation { duration: 1500 }
++        ScriptAction { script: if (pet.mood === "neutral") pet.baseFace = "neutral" }
++    }
++
++    SequentialAnimation {
++        id: stretchAnim
++        PropertyAction { target: pet; property: "baseFace"; value: "happy" }
++        NumberAnimation { target: niko3d; property: "wave"; to: 1; duration: 450; easing.type: Easing.OutCubic }
++        NumberAnimation { target: niko3d; property: "waveMix"; to: 0.5; duration: 300 }
++        PauseAnimation { duration: 700 }
++        NumberAnimation { target: niko3d; property: "wave"; to: 0; duration: 500; easing.type: Easing.InOutCubic }
++        PropertyAction { target: niko3d; property: "waveMix"; value: 0 }
++        ScriptAction { script: if (pet.mood === "neutral") pet.baseFace = "neutral" }
++    }
++
++    SequentialAnimation {
++        id: legSwing
++        loops: 4
++        NumberAnimation { target: niko3d; property: "kick"; to: 0.35; duration: 380; easing.type: Easing.InOutSine }
++        NumberAnimation { target: niko3d; property: "kick"; to: -0.35; duration: 380; easing.type: Easing.InOutSine }
++        onStopped: niko3d.kick = 0
++    }
++
++
++    Item {
++        id: modelHolder
++        anchors.fill: parent
++        property real hopY: 0
++
++        SequentialAnimation {
++            id: hop
++            NumberAnimation { target: modelHolder; property: "hopY"; to: 14; duration: 160; easing.type: Easing.OutQuad }
++            NumberAnimation { target: modelHolder; property: "hopY"; to: 0; duration: 260; easing.type: Easing.OutBounce }
++        }
++
++        property bool viewReady: false
++        Timer { interval: 1200; running: true; onTriggered: modelHolder.viewReady = true }
++
++        Image {
++            anchors.fill: parent
++            visible: pet.skinPath !== ""
++            source: pet.skinPath !== "" ? "file://" + pet.skinPath : ""
++            fillMode: Image.PreserveAspectFit
++            verticalAlignment: Image.AlignBottom
++            asynchronous: true
++            mipmap: true
++            sourceSize.height: 512
++            y: -modelHolder.hopY
++            rotation: niko3d.lean
++            transformOrigin: Item.Bottom
++        }
++
++        View3D {
++            anchors.fill: parent
++            visible: modelHolder.viewReady && pet.skinPath === "" && width > 0 && height > 0
++            environment: SceneEnvironment {
++                backgroundMode: SceneEnvironment.Transparent
++                antialiasingMode: SceneEnvironment.MSAA
++                antialiasingQuality: SceneEnvironment.Medium
++            }
++
++            PerspectiveCamera {
++                y: pet.place === "bar" ? 64 : 88
++                z: pet.place === "bar" ? 196 : 262
++                fieldOfView: 40
++                eulerRotation.x: -3
++            }
++            DirectionalLight { eulerRotation: Qt.vector3d(-35, -30, 0); brightness: 1.1 }
++            DirectionalLight { eulerRotation: Qt.vector3d(-10, 140, 0); brightness: 0.35; color: "#b9a6ff" }
++
++            Niko3D {
++                id: niko3d
++                property real lean: 0
++                property real sitValue: pet.sitTarget
++                property real sway: 0
++                Behavior on lean { NumberAnimation { duration: 280; easing.type: Easing.OutBack } }
++                Behavior on sitValue { NumberAnimation { duration: 650; easing.type: Easing.InOutCubic } }
++
++                eulerRotation.z: lean + (pet.place === "held" ? swing.angle : 0)
++                y: modelHolder.hopY
++                expression: pet.shownFace
++                sit: pet.place === "bar" ? 1 : sitValue
++                eulerRotation.y: pet.spinAngle + (walk.dir !== 0 ? walk.dir * 60 : (hover.hovered || pet.chatOpen ? 0 : (follow.active ? follow.body : -14 + glance.body)))
++                headTurn: follow.active ? follow.head : glance.head
++                headSway: sway
++
++                Behavior on eulerRotation.y { enabled: pet.turnSmoothing; NumberAnimation { duration: 700; easing.type: Easing.InOutCubic } }
++                Behavior on sleepy { NumberAnimation { duration: 500 } }
++                Behavior on headTilt { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
++                Behavior on headTurn { NumberAnimation { duration: 500; easing.type: Easing.InOutCubic } }
++                Behavior on bulbGlow { NumberAnimation { duration: 600 } }
++            }
++        }
++    }
++
++    SequentialAnimation {
++        id: waveAnim
++        NumberAnimation { target: niko3d; property: "wave"; to: 1; duration: 220; easing.type: Easing.OutCubic }
++        SequentialAnimation {
++            loops: 3
++            NumberAnimation { target: niko3d; property: "waveMix"; to: 1; duration: 180; easing.type: Easing.InOutSine }
++            NumberAnimation { target: niko3d; property: "waveMix"; to: 0; duration: 180; easing.type: Easing.InOutSine }
++        }
++        NumberAnimation { target: niko3d; property: "wave"; to: 0; duration: 300; easing.type: Easing.InOutCubic }
++    }
++
++    SequentialAnimation {
++        running: pet.place === "held"
++        loops: Animation.Infinite
++        onRunningChanged: if (!running) niko3d.kick = 0
++        NumberAnimation { target: niko3d; property: "kick"; to: 1; duration: 260; easing.type: Easing.InOutSine }
++        NumberAnimation { target: niko3d; property: "kick"; to: -1; duration: 260; easing.type: Easing.InOutSine }
++    }
++
++    QtObject {
++        id: swing
++        property real angle: 0
++    }
++    SequentialAnimation {
++        running: pet.place === "held"
++        loops: Animation.Infinite
++        onRunningChanged: if (!running) swing.angle = 0
++        NumberAnimation { target: swing; property: "angle"; to: 7; duration: 420; easing.type: Easing.InOutSine }
++        NumberAnimation { target: swing; property: "angle"; to: -7; duration: 420; easing.type: Easing.InOutSine }
++    }
++
++    property real swayAmount: 0
++    Behavior on swayAmount { NumberAnimation { duration: 600 } }
++    readonly property bool swaying: pet.visible && !pet.sleeping && !pet.thinking && pet.mood === "neutral" && musicCheck.playing && pet.place !== "held"
++    onSwayingChanged: swayAmount = swaying ? 1 : 0
++    Timer {
++        running: pet.visible
++        interval: 66
++        repeat: true
++        onTriggered: {
++            let t = Date.now() / 1000;
++            niko3d.bob = 0.7 + 0.7 * Math.sin(t * Math.PI / (pet.sleeping ? 2.2 : 1.3));
++            niko3d.sway = 6 * pet.swayAmount * Math.sin(t * Math.PI / 0.52);
++        }
++    }
++
++    Timer {
++        running: pet.visible && !pet.sleeping
++        interval: 3000
++        repeat: true
++        onTriggered: {
++            interval = 2200 + Math.random() * 4000;
++            blinkAnim.restart();
++        }
++    }
++    SequentialAnimation {
++        id: blinkAnim
++        NumberAnimation { target: niko3d; property: "blink"; to: 1; duration: 60 }
++        NumberAnimation { target: niko3d; property: "blink"; to: 0; duration: 100 }
++    }
++
++
++    states: State {
++        when: pet.sleeping
++        PropertyChanges { target: niko3d; sleepy: 1; headTilt: 10; bulbGlow: 0.45 }
++    }
++
++    SequentialAnimation {
++        running: pet.thinking
++        loops: Animation.Infinite
++        onRunningChanged: if (!running) niko3d.bulbGlow = 1.0
++        NumberAnimation { target: niko3d; property: "bulbGlow"; to: 1.6; duration: 450; easing.type: Easing.InOutSine }
++        NumberAnimation { target: niko3d; property: "bulbGlow"; to: 0.8; duration: 450; easing.type: Easing.InOutSine }
++    }
++
++
++    Item {
++        id: hit
++        x: parent.width * 0.15
++        y: parent.height * 0.05
++        width: parent.width * 0.7
++        height: parent.height * 0.93
++
++        HoverHandler { id: hover }
++
++        MouseArea {
++            id: dragArea
++            anchors.fill: parent
++            acceptedButtons: Qt.LeftButton | Qt.RightButton
++            cursorShape: pet.place === "held" ? Qt.ClosedHandCursor : Qt.PointingHandCursor
++            preventStealing: true
++
++            property point pressAt: Qt.point(0, 0)
++            property real lastX: 0
++            property bool wasDragged: false
++
++            onPressed: (mouse) => {
++                let g = mapToItem(pet.parent, mouse.x, mouse.y);
++                pressAt = g;
++                lastX = g.x;
++                wasDragged = false;
++            }
++            onPositionChanged: (mouse) => {
++                if (!(mouse.buttons & Qt.LeftButton)) return;
++                let g = mapToItem(pet.parent, mouse.x, mouse.y);
++                if (pet.place !== "held") {
++                    if (Math.abs(g.x - pressAt.x) + Math.abs(g.y - pressAt.y) < info.s(6)) return;
++                    wasDragged = true;
++                    pet.pickUp();
++                }
++                pet.footX = Math.max(0, Math.min(pet.screenW, g.x));
++                pet.footY = Math.max(pet.height, Math.min(pet.screenH, g.y + pet.height * 0.85));
++                niko3d.lean = Math.max(-25, Math.min(25, (g.x - lastX) * -1.5));
++                lastX = g.x;
++            }
++            onReleased: (mouse) => { if (pet.place === "held") pet.drop(); }
++            onCanceled: { if (pet.place === "held") pet.drop(); }
++            onClicked: (mouse) => {
++                if (wasDragged || pet.place === "held" || pet.falling) return;
++                pet.touch();
++                if (mouse.button === Qt.RightButton) {
++                    if (niko3d.sit < 0.5) { hop.loops = 1; hop.restart(); }
++                    pet.say(pet.pick(["hehe!", "that tickles!", "*purrs*... wait, i don't purr!", "pat pat!", "mmh, warm hands.", "hehe... thank you."]), "happy", 2500);
++                    return;
++                }
++                if (pet.napping) { pet.perform([{ name: "wake", args: "" }]); pet.say(pet.pick(["*yawns* oh! hi!", "mmh... i'm awake!"]), "sleepy"); return; }
++                if (pet.sleeping) return;
++                if (pet.chatOpen) pet.closeChat();
++                else pet.openChat();
++            }
++        }
++    }
++
++
++    Rectangle {
++        id: bubble
++        visible: pet.bubbleVisible
++        width: Math.min(info.s(280), Math.max(bubbleLabel.implicitWidth, pet.chatOpen ? info.s(200) : 0) + info.s(28))
++        height: column.implicitHeight + info.s(20)
++        x: Math.round(Math.max(info.s(8) - pet.x, Math.min(pet.width / 2 - width / 2, pet.screenW - pet.x - width - info.s(8))))
++        y: pet.place === "bar" ? Math.round(pet.height + info.s(8)) : Math.round(-height - info.s(6))
++        radius: info.s(16)
++        color: Qt.alpha(ThemeBackend.base, ThemeBackend.elementOpacity)
++
++        WallpaperBlur {
++            z: -1
++            anchors.fill: parent
++            radius: parent.radius
++        }
++
++        MouseArea {
++            anchors.fill: parent
++            enabled: !pet.chatOpen && !pet.sleeping
++            cursorShape: Qt.PointingHandCursor
++            onClicked: pet.openChat()
++        }
++
++        Column {
++            id: column
++            anchors.centerIn: parent
++            width: parent.width - info.s(28)
++            spacing: info.s(8)
++
++            Text {
++                id: bubbleLabel
++                width: parent.width
++                visible: text !== ""
++                text: pet.sleeping ? "z z z..." : pet.bubbleText.substring(0, pet.shownChars)
++                wrapMode: Text.Wrap
++                horizontalAlignment: Text.AlignHCenter
++                color: ThemeBackend.text
++                font.family: ThemeBackend.fontFamily
++                font.pixelSize: info.s(13)
++                font.italic: pet.sleeping || pet.thinking
++            }
++
++            Rectangle {
++                visible: pet.chatOpen
++                width: parent.width
++                height: info.s(30)
++                radius: info.s(10)
++                color: Qt.alpha(ThemeBackend.surface0, ThemeBackend.elementOpacity)
++
++                TextInput {
++                    id: chatInput
++                    anchors.fill: parent
++                    anchors.leftMargin: info.s(10)
++                    anchors.rightMargin: info.s(10)
++                    verticalAlignment: TextInput.AlignVCenter
++                    color: ThemeBackend.text
++                    font.family: ThemeBackend.fontFamily
++                    font.pixelSize: info.s(12)
++                    clip: true
++                    maximumLength: 300
++                    enabled: !pet.thinking
++                    onTextChanged: { idleClose.restart(); pet.touch(); }
++                    Keys.onReturnPressed: pet.send(text)
++                    Keys.onEnterPressed: pet.send(text)
++                    Keys.onEscapePressed: pet.closeChat()
++
++                    Text {
++                        anchors.verticalCenter: parent.verticalCenter
++                        visible: chatInput.text === ""
++                        text: pet.thinking ? pet.displayName + " is thinking..." : "Say something to " + pet.displayName + "..."
++                        color: ThemeBackend.subtext0
++                        font: chatInput.font
++                    }
++                }
++            }
++        }
++    }
++}
+--- a/quickshell/dock/NikoWindow.qml
++++ b/quickshell/dock/NikoWindow.qml
+@@ -0,0 +1,81 @@
++import QtQuick
++import Quickshell
++import Quickshell.Io
++import Quickshell.Wayland
++import Quickshell.Hyprland
++import "../"
++
++PanelWindow {
++    id: nikoWindow
++
++    screen: Quickshell.screens[0]
++    anchors { top: true; bottom: true; left: true; right: true }
++    exclusionMode: ExclusionMode.Ignore
++    color: "transparent"
++    visible: true
++    focusable: pet.chatOpen
++
++    WlrLayershell.namespace: "qs-niko"
++    WlrLayershell.layer: WlrLayer.Overlay
++
++    mask: Region {
++        Region { item: pet.place === "held" ? wholeScreen : null }
++        Region { item: pet.visible ? pet.hitArea : null }
++        Region { item: pet.visible && pet.bubbleVisible ? pet.bubbleArea : null }
++    }
++
++    Item { id: wholeScreen; anchors.fill: parent }
++
++    QtObject {
++        id: info
++        property int elementSize: 32
++        property bool fullscreen: false
++        property bool fsNow: false
++        property bool cheering: false
++        readonly property bool hidden: fsNow && !cheering
++        property bool barAvailable: false
++        property real barTop: 0
++        property real barBottom: 0
++        property bool dockShown: false
++        property real dockLeft: 0
++        property real dockRight: 0
++        property real dockTop: 0
++        function s(v) { return Scaler.s(v); }
++    }
++
++    FileView {
++        path: Quickshell.env("XDG_RUNTIME_DIR") + "/serpantinum/niko/dock.json"
++        watchChanges: true
++        onFileChanged: reload()
++        onLoaded: {
++            try {
++                let d = JSON.parse(typeof text === "function" ? text() : text);
++                for (let k in d) if (k in info) info[k] = d[k];
++            } catch (e) {}
++        }
++    }
++
++    Process {
++        id: fsCheck
++        property bool again: false
++        command: ["hyprctl", "-j", "activeworkspace"]
++        stdout: StdioCollector {
++            onStreamFinished: { try { info.fsNow = JSON.parse(text).hasfullscreen === true; } catch (e) {} }
++        }
++        onRunningChanged: if (!running && again) { again = false; running = true; }
++    }
++    Connections {
++        target: Hyprland
++        function onRawEvent(event) {
++            if (["fullscreen", "workspacev2", "focusedmonv2", "activewindowv2", "closewindow", "openwindow", "movewindowv2"].indexOf(event.name) === -1) return;
++            if (event.name === "fullscreen") info.fsNow = (event.data || "").trim() === "1";
++            if (fsCheck.running) fsCheck.again = true; else fsCheck.running = true;
++        }
++    }
++    Component.onCompleted: fsCheck.running = true
++
++    NikoPet {
++        id: pet
++        info: info
++    }
++}
+--- a/quickshell/NikoShell.qml
++++ b/quickshell/NikoShell.qml
+@@ -0,0 +1,7 @@
++import QtQuick
++import Quickshell
++import "dock"
++
++ShellRoot {
++    NikoWindow {}
++}
+--- a/scripts/niko/niko_rpc.py
++++ b/scripts/niko/niko_rpc.py
+@@ -0,0 +1,152 @@
++#!/usr/bin/env python3
++import asyncio, json, os, signal, socket, struct, sys, time
++
++RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
++SOCK = os.path.join(RUNTIME, "discord-ipc-0")
++REAL = SOCK + ".niko-real"
++OUT_DIR = os.path.join(RUNTIME, "serpantinum", "niko")
++OUT = os.path.join(OUT_DIR, "presence.json")
++LOG = os.path.join(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "serpantinum", "niko", "rpc.log")
++
++
++def connectable(path):
++    s = socket.socket(socket.AF_UNIX)
++    s.settimeout(0.5)
++    try:
++        s.connect(path)
++        return True
++    except OSError:
++        return False
++    finally:
++        s.close()
++
++
++def upstream_paths():
++    return [REAL] + [os.path.join(RUNTIME, f"discord-ipc-{i}") for i in range(1, 10)]
++
++
++def write_atomic(path, text):
++    tmp = path + ".tmp"
++    with open(tmp, "w") as f:
++        f.write(text)
++    os.replace(tmp, path)
++
++
++last = None
++
++
++def note_activity(msg):
++    global last
++    if msg.get("cmd") != "SET_ACTIVITY":
++        return
++    act = (msg.get("args") or {}).get("activity")
++    if not act:
++        data = {"details": "", "state": "", "name": "", "t": time.time()}
++    else:
++        data = {"details": act.get("details", ""), "state": act.get("state", ""), "name": act.get("name", ""),
++                "assets": (act.get("assets") or {}).get("large_text", ""), "t": time.time()}
++    key = (data["details"], data["state"], data["assets"] if "assets" in data else "")
++    if key == last:
++        return
++    last = key
++    try:
++        write_atomic(OUT, json.dumps(data))
++        os.makedirs(os.path.dirname(LOG), exist_ok=True)
++        with open(LOG, "a") as f:
++            f.write(json.dumps(data) + "\n")
++        if os.path.getsize(LOG) > 200000:
++            os.replace(LOG, LOG + ".old")
++    except OSError:
++        pass
++
++
++async def pump(reader, writer, sniff):
++    buf = b""
++    try:
++        while True:
++            data = await reader.read(65536)
++            if not data:
++                break
++            writer.write(data)
++            await writer.drain()
++            if sniff:
++                buf += data
++                while len(buf) >= 8:
++                    op, n = struct.unpack("<II", buf[:8])
++                    if n > 1 << 20:
++                        buf = b""
++                        break
++                    if len(buf) < 8 + n:
++                        break
++                    if op == 1:
++                        try:
++                            note_activity(json.loads(buf[8:8 + n]))
++                        except ValueError:
++                            pass
++                    buf = buf[8 + n:]
++    except (ConnectionError, OSError):
++        pass
++    finally:
++        try:
++            writer.close()
++        except Exception:
++            pass
++
++
++async def handle(creader, cwriter):
++    for p in upstream_paths():
++        if os.path.exists(p):
++            try:
++                ureader, uwriter = await asyncio.open_unix_connection(p)
++                break
++            except OSError:
++                continue
++    else:
++        cwriter.close()
++        return
++    await asyncio.gather(pump(creader, uwriter, True), pump(ureader, cwriter, False))
++
++
++def restore():
++    try:
++        if os.path.exists(SOCK) and not os.path.exists(REAL):
++            os.unlink(SOCK)
++        elif os.path.exists(REAL):
++            if os.path.exists(SOCK):
++                os.unlink(SOCK)
++            if connectable(REAL):
++                os.rename(REAL, SOCK)
++            else:
++                os.unlink(REAL)
++    except OSError:
++        pass
++
++
++async def main():
++    os.makedirs(OUT_DIR, exist_ok=True)
++    if os.path.exists(REAL):
++        if connectable(SOCK):
++            return False
++        restore()
++    if os.path.exists(SOCK) and connectable(SOCK):
++        os.rename(SOCK, REAL)
++    elif os.path.exists(SOCK):
++        os.unlink(SOCK)
++    server = await asyncio.start_unix_server(handle, SOCK)
++    stop = asyncio.Event()
++    loop = asyncio.get_running_loop()
++    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
++        loop.add_signal_handler(sig, stop.set)
++
++    await stop.wait()
++    server.close()
++    return True
++
++
++if __name__ == "__main__":
++    owned = False
++    try:
++        owned = asyncio.run(main())
++    finally:
++        if owned:
++            restore()
+--- a/scripts/niko/nullscape.txt
++++ b/scripts/niko/nullscape.txt
+@@ -0,0 +1,5 @@
++Nullscape (Roblox, "collectathon roguelite", inspired by Wega's Challenge): survive and collect all the presents on endless, randomly generated levels. Enemies, upgrades and curses get added gradually as levels go up (curses at milestones). Latest: Patch 5.1 "Delusional Descension" (Oct 24 2026): new curses, upgrades and the Delusions mechanic. Wiki: nullscape.wiki.
++Classes: Diver (free, default; dive and jump out of dives), Charger (free; hold ability to charge through Tripmines), Spirit (1400 Tripcoins; leave your body as a fast spirit that absorbs one hit), Grappler (1800; hook platforms/jump pads/grapple points, meter drains), Glider (2000; glide, steer with camera, hitting surfaces boosts you up), Prisoner (level 25 Extreme badge; no ability, +25% Tripcoins), Wanted (level 25 Normal badge; ability only stops momentum, +10% speed).
++Enemies: Bell, Baby, Husk, ICBM, Mart, Springer, Flesh, Operator, Guardian, Telefragger (distortion field on high graphics), Kolona, Voidbound Baby/ICBM/Guardian (replace the normal ones), Voidbreaker, Cadence, Sigil, Scrapmaw (from level 25, rushes you then fires lasers), plus special Red Mart and Ponderer. Doom in Bloom added respawning thorn barriers and flower enemies.
++Not known in detail: exact enemy stats, spawn levels (except Scrapmaw), best upgrades. If unsure, say so and point to nullscape.wiki; never invent numbers.
++Details per topic (enemies, classes, curses, upgrades, modes) come with the question; trust those over this summary.

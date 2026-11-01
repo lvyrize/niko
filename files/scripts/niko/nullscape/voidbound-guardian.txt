@@ -1,0 +1,2 @@
+voidbound guardian, void guardian
+Voidbound Guardian first appears at level 20, only if a permanent Guardian was obtained beforehand. It fires an extra shot per volley with faster bullets that explode into beams on contact with a surface. Dash and attack cooldowns are shorter, and Altar of Passage enrages it. Counter: use speed upgrades like Sport Shoes and Radar Module: Enemies, and expect it late since it can end an early run. Selection cap 1, max stack 3. Beams per projectile: 2 (Casual), 4 (Standard), 6 (Extreme).

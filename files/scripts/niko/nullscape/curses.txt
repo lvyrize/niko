@@ -1,0 +1,2 @@
+curse, curses, greater curse, greater curses, curse shop
+Curses are debuff-style modifiers, some with positive effects. They appear in curse shops on even-numbered levels, offering three pedestals with rerolls. Greater Curses are rarer, have drastic effects, and cannot be removed by Altar of Purification. Groups: Global (16, whole run, e.g. Lower Gravity, Higher Gravity, Jackpot, Minefield); Enemy Curses (shown only when their enemy is present, e.g. Husk, Mart, Flesh); Developer Exclusive; Removed (e.g. Ice Tiles); Unused (e.g. Pursuit).

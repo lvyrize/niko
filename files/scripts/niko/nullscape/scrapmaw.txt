@@ -1,0 +1,2 @@
+scrapmaw
+Scrapmaw first appears at level 25 (briefly lowered to 20 in a May 2026 hotfix, restored in Patch 5.1). Every 20-30 seconds it appears from a random direction, signaled by a train horn, then dashes past dealing contact damage and fires parallel laser rows. It always charges out of a distant blackhole in a straight line. Counter: listen for the horn, avoid its main body which can strand you, build speed or use Seamines boosts, and stay away from Sigils, since combined attacks are hard to survive.

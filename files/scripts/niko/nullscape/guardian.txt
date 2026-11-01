@@ -1,0 +1,2 @@
+guardian, guardians
+Guardian first appears at level 8, selection cap 1, max stack 8. Every few seconds it dashes toward the nearest player, predicting their movement, then fires a volley of 3 projectiles (4 faster ones on Extreme). Only its projectiles are lethal, and they stop at solid objects or after a time. It enrages when an Altar of Passage is activated. Counter: move to the side of the volley, not directly toward or away from it, avoid getting close while it fires, and zoom out to spot projectiles sooner.

@@ -1,0 +1,2 @@
+cadence
+Cadence first appears at level 15. While passive, an instrument spawns near a player every 25 seconds (30 with two or more present). Two or more uncollected instruments drain its timer. When the timer expires, Cadence enrages and chases the nearest player at 80 studs/s (130 on Extreme), killing on contact. Counter: prioritize collecting instruments over gifts, follow the chain strings to find them, watch for Tripmines, and consider Radar Module: Instruments. Collecting enough instruments calms it down.
