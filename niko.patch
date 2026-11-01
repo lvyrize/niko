@@ -60,7 +60,7 @@
 +NikoWindow 1.0 NikoWindow.qml
 --- a/scripts/niko/niko_brain.py
 +++ b/scripts/niko/niko_brain.py
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,515 @@
 +#!/usr/bin/env python3
 +import sys, os, json, time, datetime, random, re, shutil, subprocess, threading, queue
 +sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +84,7 @@
 +    "followCursor": True,
 +    "shareWindowTitles": False,
 +    "shareVideoTitles": True,
++    "appDwellMs": 2000,
 +    "userName": ""
 +}
 +
@@ -1296,7 +1297,7 @@
 +    sys.exit(main())
 --- a/quickshell/dock/NikoPet.qml
 +++ b/quickshell/dock/NikoPet.qml
-@@ -0,0 +1,1566 @@
+@@ -0,0 +1,1631 @@
 +import QtQuick
 +import QtQuick3D
 +import Quickshell
@@ -2080,6 +2081,7 @@
 +            let title = comma === -1 ? "" : d.substring(comma + 1);
 +            let site = apps.category(cls) === "web" ? pet.siteOf(title) : "";
 +            let freeToReact = Date.now() - (pet.lastReaction["app"] || 0) > 90000 && pet.requestKind === "";
++            if (cls === "") appDwell.stop();
 +            if (cls === "" || cls === apps.current) {
 +                apps.title = title;
 +                if (site !== "" && site !== apps.site) { apps.site = site; if (freeToReact) pet.onSiteChanged(site); }
@@ -2091,9 +2093,22 @@
 +            apps.longNudged = "";
 +            apps.site = site;
 +            apps.video = pet.videoSites.indexOf(site) !== -1 ? pet.videoTitle(title, site) : "";
-+            if (!freeToReact) return;
-+            if (site !== "") pet.onSiteChanged(site);
-+            else pet.onAppChanged(cls);
++            appDwell.pendingClass = cls;
++            appDwell.pendingSite = site;
++            appDwell.interval = Math.max(0, Number(pet.config.appDwellMs) || 2000);
++            appDwell.restart();
++        }
++    }
++
++    Timer {
++        id: appDwell
++        property string pendingClass: ""
++        property string pendingSite: ""
++        onTriggered: {
++            if (pendingClass === "" || pendingClass !== apps.current) return;
++            if (Date.now() - (pet.lastReaction["app"] || 0) <= 90000 || pet.requestKind !== "") return;
++            if (pendingSite !== "") pet.onSiteChanged(pendingSite);
++            else pet.onAppChanged(pendingClass);
 +        }
 +    }
 +
@@ -2319,6 +2334,15 @@
 +        walkAnim.duration = Math.min(6000, Math.abs(target - pet.footX) * 6);
 +        walkAnim.restart();
 +    }
++    function walkBy(px) {
++        let margin = pet.width;
++        let target = Math.max(margin, Math.min(pet.screenW - margin, pet.footX + px));
++        if (pet.place !== "floor" || Math.abs(target - pet.footX) < 4) return;
++        walk.dir = target > pet.footX ? 1 : -1;
++        walkAnim.to = target;
++        walkAnim.duration = Math.abs(target - pet.footX) * 6;
++        walkAnim.restart();
++    }
 +    QtObject { id: walk; property int dir: 0 }
 +    NumberAnimation {
 +        id: walkAnim
@@ -2493,9 +2517,10 @@
 +            interval = 5000 + Math.random() * 9000;
 +            let idleFor = (Date.now() - pet.lastInteraction) / 1000;
 +            let seated = niko3d.sit > 0.5;
-+            let actions = ["look", "look", "tilt", "blink2", "bulb"];
-+            if (!seated) actions.push("turn", "turn", "hop");
-+            if (seated) actions.push("swing", "swing");
++            let actions = ["look", "look", "tilt", "blink2", "bulb", "lookaround", "sway"];
++            if (!seated) actions.push("turn", "turn", "hop", "bounce", "wave", "pace", "pace");
++            if (seated) actions.push("swing", "swing", "doze");
++            if (!seated && Math.random() < 0.15) actions.push("spin");
 +            if (pet.place === "floor" && !seated && idleFor > 90) actions.push("sit", "sit");
 +            let h = new Date().getHours();
 +            if (h >= 23 || h < 6 || Math.random() < 0.15) actions.push("yawn");
@@ -2511,7 +2536,48 @@
 +            else if (a === "sit") pet.sitDown();
 +            else if (a === "yawn") yawnAnim.restart();
 +            else if (a === "stretch") stretchAnim.restart();
++            else if (a === "lookaround") lookAround.restart();
++            else if (a === "sway") swayAnim.restart();
++            else if (a === "bounce") { hop.loops = 2; hop.restart(); }
++            else if (a === "wave") waveAnim.restart();
++            else if (a === "pace") { if (pet.place === "floor" && !walkAnim.running && !pet.falling) pet.walkBy((Math.random() < 0.5 ? -1 : 1) * pet.screenW * (0.04 + Math.random() * 0.08)); }
++            else if (a === "spin") spinAnim.restart();
++            else if (a === "doze") dozeAnim.restart();
 +        }
++    }
++
++    SequentialAnimation {
++        id: lookAround
++        NumberAnimation { target: glance; property: "head"; to: -24; duration: 500; easing.type: Easing.InOutSine }
++        PauseAnimation { duration: 700 }
++        NumberAnimation { target: glance; property: "head"; to: 24; duration: 900; easing.type: Easing.InOutSine }
++        PauseAnimation { duration: 700 }
++        NumberAnimation { target: glance; property: "head"; to: 0; duration: 500; easing.type: Easing.InOutSine }
++    }
++
++    SequentialAnimation {
++        id: swayAnim
++        NumberAnimation { target: niko3d; property: "lean"; to: 7; duration: 700; easing.type: Easing.InOutSine }
++        NumberAnimation { target: niko3d; property: "lean"; to: -7; duration: 1400; easing.type: Easing.InOutSine }
++        NumberAnimation { target: niko3d; property: "lean"; to: 0; duration: 700; easing.type: Easing.InOutSine }
++    }
++
++    SequentialAnimation {
++        id: dozeAnim
++        PropertyAction { target: pet; property: "baseFace"; value: "sleepy" }
++        ParallelAnimation {
++            NumberAnimation { target: niko3d; property: "sleepy"; to: 0.7; duration: 1400; easing.type: Easing.InOutSine }
++            NumberAnimation { target: niko3d; property: "headTilt"; to: 14; duration: 1400; easing.type: Easing.InOutSine }
++        }
++        PauseAnimation { duration: 1800 }
++        PropertyAction { target: pet; property: "baseFace"; value: "surprised" }
++        ParallelAnimation {
++            NumberAnimation { target: niko3d; property: "sleepy"; to: 0; duration: 200 }
++            NumberAnimation { target: niko3d; property: "headTilt"; to: 0; duration: 200 }
++        }
++        ScriptAction { script: { hop.loops = 1; hop.restart(); } }
++        PauseAnimation { duration: 900 }
++        ScriptAction { script: if (pet.mood === "neutral") pet.baseFace = "neutral" }
 +    }
 +
 +    QtObject {
@@ -2631,7 +2697,7 @@
 +                property real lean: 0
 +                property real sitValue: pet.sitTarget
 +                property real sway: 0
-+                Behavior on lean { NumberAnimation { duration: 280; easing.type: Easing.OutBack } }
++                Behavior on lean { enabled: !swayAnim.running; NumberAnimation { duration: 280; easing.type: Easing.OutBack } }
 +                Behavior on sitValue { NumberAnimation { duration: 650; easing.type: Easing.InOutCubic } }
 +
 +                eulerRotation.z: lean + (pet.place === "held" ? swing.angle : 0)
