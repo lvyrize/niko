@@ -60,7 +60,7 @@
 +NikoWindow 1.0 NikoWindow.qml
 --- a/scripts/niko/niko_brain.py
 +++ b/scripts/niko/niko_brain.py
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,524 @@
 +#!/usr/bin/env python3
 +import sys, os, json, time, datetime, random, re, shutil, subprocess, threading, queue
 +sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -127,6 +127,15 @@
 +    with open(tmp, "w") as f:
 +        json.dump(data, f, ensure_ascii=False, indent=1)
 +    os.replace(tmp, path)
++
++
++def skin_name():
++    try:
++        with open(os.path.join(STATE_DIR, "skin.txt")) as f:
++            lines = f.read().split("\n")
++        return lines[1].strip() if len(lines) > 1 and lines[0].strip() else ""
++    except OSError:
++        return ""
 +
 +
 +def load_config():
@@ -1590,7 +1599,7 @@
 +        bubbleHide.restart();
 +    }
 +
-+    function openBestApp(query, minScore) {
++    function openBestApp(query, minScore, quiet) {
 +        const q = query.toLowerCase().trim();
 +        if (q.length < 2 || typeof DesktopEntries === "undefined" || !DesktopEntries.applications) return false;
 +        let best = null, bestScore = 0;
@@ -1608,7 +1617,7 @@
 +        }
 +        if (!best || bestScore < (minScore || 1)) return false;
 +        best.execute();
-+        pet.say(pet.pick(["opening " + best.name + "!", "okay! " + best.name + ", coming up.", "there you go, " + best.name + "!"]), "happy");
++        if (!quiet) pet.say(pet.pick(["opening " + best.name + "!", "okay! " + best.name + ", coming up.", "there you go, " + best.name + "!"]), "happy");
 +        return true;
 +    }
 +
@@ -2320,7 +2329,7 @@
 +            else if (name === "open_app") {
 +                let entry = DesktopEntries.heuristicLookup(args);
 +                if (entry) entry.execute();
-+                else pet.say("hmm... i couldn't find " + args + ".", "worried");
++                else if (!pet.openBestApp(args, 40, true)) pet.say("hmm... i couldn't find " + args + ".", "worried");
 +            }
 +        }
 +    }
