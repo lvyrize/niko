@@ -1,6 +1,6 @@
 # Niko
 
-A 3D Niko from OneShot that lives on your desktop. It's an add-on for [serpantinum](https://github.com/ilyamiro/serpantinum) (Quickshell + Hyprland). You can chat with him, he reacts to what you're doing, sets reminders, controls music and cheers when you level up in Nullscape.
+A 3D Niko from OneShot that lives on your desktop. It's an add-on for [serpantinum](https://github.com/ilyamiro/serpantinum) (Quickshell + Hyprland). You can chat with him, he reacts to what you're doing, sets reminders, controls music.
 
 Chatting goes through Claude Code, so you need to be logged in to it (a Claude plan or an API key). Everything else works without.
 
