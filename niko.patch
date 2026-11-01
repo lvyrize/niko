@@ -1297,7 +1297,7 @@
 +    sys.exit(main())
 --- a/quickshell/dock/NikoPet.qml
 +++ b/quickshell/dock/NikoPet.qml
-@@ -0,0 +1,1625 @@
+@@ -0,0 +1,1629 @@
 +import QtQuick
 +import QtQuick3D
 +import Quickshell
@@ -2048,7 +2048,11 @@
 +            ai: ["is that claude? tell him i said hi!", "ooh, talking to the smart one? that's where my brain comes from!"],
 +            "": ["ooh, " + name + "!", "what are we doing in " + name + "?"]
 +        };
-+        if (pet.react("app-" + cls.toLowerCase(), 150000, pet.pick(lines[cat]), cat === "game" ? "excited" : "curious"))
++        const c = cls.toLowerCase();
++        const own = /sober/.test(c) ? ["sober! are we playing roblox?", "ooh, roblox! i'll cheer for you!", "good luck out there!"]
++                  : /sonora/.test(c) ? ["sonora! what are we listening to?", "ooh, music! play something soft?", "i love when sonora is open..."]
++                  : null;
++        if (pet.react("app-" + c, 0, pet.pick(own || lines[cat]), cat === "game" ? "excited" : "curious"))
 +            pet.lastReaction["app"] = Date.now();
 +    }
 +
@@ -2110,7 +2114,7 @@
 +        property string pendingSite: ""
 +        onTriggered: {
 +            if (pendingClass === "" || pendingClass !== apps.current) return;
-+            if (Date.now() - (pet.lastReaction["app"] || 0) <= 15000 || pet.requestKind !== "") return;
++            if (pet.requestKind !== "") return;
 +            if (pendingSite !== "") pet.onSiteChanged(pendingSite);
 +            else pet.onAppChanged(pendingClass);
 +        }
