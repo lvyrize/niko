@@ -4,6 +4,4 @@
 
 Changes: converted from FBX to glTF and then to Qt Quick 3D meshes, re-posed with morph targets for the arms and legs, new face textures for the expressions (see `tools/`). The creator doesn't endorse this project.
 
-**Nullscape:** the fact pages in `scripts/niko/nullscape/` are notes taken from [nullscape.wiki](https://nullscape.wiki). Nullscape belongs to its developers.
-
 **OneShot:** Niko and OneShot belong to their creators.
